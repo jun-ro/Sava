@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file>sava.png</file>
+    </qresource>
+</RCC>

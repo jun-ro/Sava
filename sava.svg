@@ -1,0 +1,95 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"
+     role="img" aria-labelledby="title">
+  <title id="title">Sava feather and four chalk bands</title>
+  <defs>
+    <clipPath id="board">
+      <rect x="47" y="47" width="930" height="930" rx="246"/>
+    </clipPath>
+    <radialGradient id="slate" cx=".42" cy=".33" r=".8">
+      <stop stop-color="#211f20"/>
+      <stop offset="1" stop-color="#151415"/>
+    </radialGradient>
+    <filter id="slate-grain" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".56" numOctaves="3" seed="31"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="band-glow" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <filter id="tube-core" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feComponentTransfer>
+        <feFuncR type="linear" slope=".80" intercept=".20"/>
+        <feFuncG type="linear" slope=".80" intercept=".20"/>
+        <feFuncB type="linear" slope=".80" intercept=".20"/>
+      </feComponentTransfer>
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <filter id="glass-reflection" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse">
+      <feFlood flood-color="#fff" flood-opacity=".22"/>
+      <feComposite in2="SourceAlpha" operator="in"/>
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+    <filter id="chalk" x="0" y="0" width="1024" height="1024" filterUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".26" numOctaves="3" seed="19" result="edge-grain"/>
+      <feDisplacementMap in="SourceGraphic" in2="edge-grain" scale="7"
+                         xChannelSelector="R" yChannelSelector="G" result="rough-stroke"/>
+
+      <feTurbulence type="fractalNoise" baseFrequency=".61" numOctaves="2" seed="37"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  1 0 0 0 0"/>
+      <feComponentTransfer result="pigment">
+        <feFuncA type="table" tableValues=".22 .28 .40 .62 .91 1 1 1 1"/>
+      </feComponentTransfer>
+
+      <feTurbulence type="fractalNoise" baseFrequency=".078 .16" numOctaves="3" seed="63"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  1 0 0 0 0"/>
+      <feComponentTransfer result="pressure">
+        <feFuncA type="table" tableValues=".38 .49 .65 .87 1 1 1 1 1"/>
+      </feComponentTransfer>
+
+      <feComposite in="rough-stroke" in2="pigment" operator="in"/>
+      <feComposite in2="pressure" operator="in"/>
+    </filter>
+
+    <path id="quill" d="M793.6 185.6
+      C691.2 195.2 576 243.2 486.4 320
+      C457.6 345.6 438.4 371.2 432 390.4
+      L489.6 416
+      C432 435.2 384 467.2 352 512
+      C316.8 563.2 310.4 627.2 342.4 681.6
+      C432 684.8 531.2 640 611.2 563.2
+      C633.6 540.8 652.8 518.4 662.4 496
+      L598.4 476.8
+      C656 448 707.2 406.4 742.4 352
+      C774.4 300.8 796.8 243.2 793.6 185.6
+      Z
+      M272 838.4
+      C275.2 780.8 294.4 729.6 342.4 681.6
+      C441.6 576 550.4 454.4 678.4 313.6"/>
+    <g id="bands" fill="none">
+      <path stroke="#ffda70" d="M-32 640 C288 576 416 768 640 512 C768 384 800 288 1088 288"/>
+      <path stroke="#ff80a7" d="M-32 726.4 C288 662.4 416 854.4 640 598.4 C768 470.4 800 374.4 1088 374.4"/>
+      <path stroke="#76e3b4" d="M-32 812.8 C288 748.8 416 940.8 640 684.8 C768 556.8 800 460.8 1088 460.8"/>
+      <path stroke="#70cdef" d="M-32 899.2 C288 835.2 416 1027.2 640 771.2 C768 643.2 800 547.2 1088 547.2"/>
+    </g>
+  </defs>
+
+  <rect x="16" y="16" width="992" height="992" rx="278" fill="#383532"/>
+  <g clip-path="url(#board)" style="isolation:isolate">
+    <rect width="1024" height="1024" fill="url(#slate)"/>
+    <rect width="1024" height="1024" filter="url(#slate-grain)" opacity=".19"
+          style="mix-blend-mode:soft-light"/>
+    <use href="#bands" stroke-width="58" filter="url(#band-glow)" opacity=".25"/>
+    <use href="#bands" stroke-width="58" opacity=".76"/>
+    <use href="#bands" stroke-width="49" opacity=".89"/>
+    <use href="#bands" stroke-width="30" filter="url(#tube-core)" opacity=".62"/>
+    <use href="#bands" stroke-width="3" transform="translate(0 -19)" filter="url(#glass-reflection)"/>
+    <use href="#quill" fill="none" stroke="#191719" stroke-opacity=".74" stroke-width="45"
+         stroke-linecap="round" stroke-linejoin="round"/>
+    <use href="#quill" fill="none" stroke="#fff" stroke-width="28"
+         stroke-linecap="round" stroke-linejoin="round" filter="url(#chalk)"/>
+  </g>
+</svg>

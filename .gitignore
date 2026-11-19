@@ -1,0 +1,7 @@
+/build/
+*.o
+*.d
+*.res
+*.exe
+.DS_Store
+Thumbs.db
