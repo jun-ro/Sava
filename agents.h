@@ -24,6 +24,10 @@ struct AgentRequest {
     QString prompt;
     QStringList images;
     bool webSearch = false;
+    bool storyLookup = false;
+    bool storyRead = false;
+    bool noteWrite = false;
+    QString systemPromptAppend;
 };
 
 struct AgentReply {
@@ -64,13 +68,16 @@ public:
     // Returns false only when a request is already running or no callback was
     // supplied. Every accepted request gets exactly one asynchronous callback,
     // including when it is cancelled.
-    bool start(const AgentRequest &request, std::function<void(AgentReply)> callback);
+    bool start(const AgentRequest &request, std::function<void(AgentReply)> callback,
+               std::function<void(const QString &)> preview = {});
     void cancel();
 
 private:
     void complete(AgentReply reply);
     void killProcess();
     void readOutput();
+    void readPreviewEvents();
+    void publishPreview(const QString &text, bool append = false);
     void finishProcess();
     void failLater(const QString &error);
     void sendAcpMessage(const QJsonObject &message);
@@ -84,7 +91,10 @@ private:
     QTimer *m_timeout = nullptr;
     QTemporaryDir *m_workdir = nullptr;
     std::function<void(AgentReply)> m_callback;
+    std::function<void(const QString &)> m_preview;
     QByteArray m_stdout;
+    qsizetype m_previewOffset = 0;
+    QString m_previewText;
     QByteArray m_stderr;
     QString m_stopReason;
     QString m_lastMessagePath;

@@ -37,6 +37,9 @@ Modern note apps shouldn't idle at half a gigabyte of RAM or burn 400 MB of disk
 
 - **Just plain Markdown** — ordinary UTF-8 `.md` files on disk, tabs, `[[wikilinks]]`, instant autosave, and a one-click rendered preview. No proprietary vault lock-in.
 - **Co-write & Council** — talks directly to your already-installed **Codex**, **Claude Code**, **OpenCode**, **Pi**, and **Antigravity** harnesses using their existing sign-in. Switch models/effort on the fly, paste up to 3 images, enable web search, or run **Council** so multiple models build on and challenge each other.
+- **Story context** — Co-write and Council start with compact excerpts selected using chapter order and note links. A harness can search for a passage, request the current draft or a full note, or work through the story note by note. Sava reads locally and sends requested pages to the selected harness as needed, with recent pages and compact findings carried forward.
+- **Write into the note** — turn on **Write** in Co-write and the harness can append to, insert into, or replace passages of the open note itself. Each edit is one undo step (Ctrl+Z), and edits that can't be placed safely are left in the chat with an Insert button.
+- **Custom system prompt** — add writing preferences in **Settings**. Sava appends them to the system instructions for each Co-write and Council request.
 - **Native Discord Rich Presence** — direct Windows named-pipe / POSIX Unix-socket IPC (zero external RPC SDK). Toggle it in **Settings** (`Ctrl+,`), optionally hide note titles, and upload [`sava.png`](sava.png) as asset key `sava` in the Discord Developer Portal (or pass `SAVA_DISCORD_CLIENT_ID`).
 
 ---

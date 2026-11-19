@@ -9,7 +9,7 @@ CXXFLAGS += -std=c++17 -Wall -Wextra -Wpedantic -MMD -MP
 LDFLAGS += -Wl,--strip-all
 LDLIBS += $(shell $(PKG_CONFIG) --libs Qt6Widgets)
 
-sources := main.cpp editor-controls.cpp workspace.cpp agents.cpp model-catalog.cpp chat.cpp discord-rpc.cpp
+sources := main.cpp editor-controls.cpp workspace.cpp story-context.cpp agents.cpp model-catalog.cpp chat.cpp chat-history.cpp discord-rpc.cpp
 objects := $(sources:%.cpp=build/%.o) build/sava-assets.o
 link_inputs := $(objects)
 

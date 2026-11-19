@@ -1,5 +1,7 @@
 #pragma once
 
+#include "story-context.h"
+
 #include <QString>
 #include <QWidget>
 
@@ -9,6 +11,14 @@
 namespace sava {
 
 enum class Harness;
+
+// One change the assistant asks to make to the open note.
+struct DocumentEdit {
+    enum class Kind { Append, InsertAfter, Replace };
+    Kind kind = Kind::Append;
+    QString anchor; // verbatim passage in the note; unused for Append
+    QString text;
+};
 
 // The co-writing assistant rail. ChatPane owns the conversation for each note,
 // drives one agent in Co-write mode or a bounded sequential council, and never
@@ -28,6 +38,12 @@ public:
     // the active note, and jump to a quoted passage that exists in it.
     std::function<void(const QString &)> insertText;
     std::function<void(const QString &)> jumpToPassage;
+    std::function<QString(const QString &noteId, const QString &question, bool lookup)> relatedStory;
+    std::function<StoryPage(const QString &noteId, const QString &selector, const QString &cursor)> readStory;
+
+    // Applies an edit to the note with this id as one undo step. Returns an error
+    // message when the edit could not be made, or an empty string on success.
+    std::function<QString(const QString &noteId, const DocumentEdit &)> editDocument;
 
     std::function<void(qint64 estimatedTokens, qint64 limit)> contextUpdated;
     std::function<void(Harness)> providerUsageChanged;

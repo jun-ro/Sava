@@ -1,14 +1,15 @@
 #include "chat.h"
 
 #include "agents.h"
+#include "chat-history.h"
 #include "app-icons.h"
-#include "editor-controls.h"
 #include "model-catalog.h"
 
 #include <QAbstractButton>
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QDesktopServices>
 #include <QDir>
 #include <QButtonGroup>
 #include <QComboBox>
@@ -19,32 +20,42 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMimeData>
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPropertyAnimation>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSet>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QTemporaryFile>
+#include <QTextBlock>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTimer>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
+#include <QVariantAnimation>
 #include <QVector>
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <optional>
 
 namespace sava {
 namespace {
@@ -59,14 +70,13 @@ const QColor kPink("#ff80a7");
 const QColor kGreen("#76e3b4");
 const QColor kBlue("#70cdef");
 
-constexpr int kMaxMessages = 40;
 constexpr int kMaxNotes = 24;
-constexpr int kMaxInputChars = 2000;
 constexpr int kMaxNoteChars = 4000;
 constexpr int kMaxHistoryMessages = 6;
 constexpr int kMaxHistoryChars = 3000;
-constexpr int kMaxImages = 3;
-constexpr int kImageSide = 1600;
+constexpr int kMaxStoryQueries = 2;
+constexpr int kStoryRequests = 6;
+constexpr int kStoryEvidenceBytes = 19 * 1024;
 constexpr int kMaxImageBytes = 2 * 1024 * 1024;
 
 const Harness kHarnesses[] = {
@@ -81,43 +91,15 @@ struct Settings {
     QString effort = QStringLiteral("Default");
 };
 
-struct ChatImage {
-    std::shared_ptr<QTemporaryFile> file;
-    QPixmap thumbnail;
-};
-
-struct ReplyQuote {
-    quint64 id = 0;
-    QString speaker;
-    QString text;
-};
-
-struct Message {
-    quint64 id = 0;
-    bool user = false;
-    bool notice = false;
-    bool error = false;
-    QString text;
-    Harness harness = Harness::Codex;
-    QString model;
-    QString effort;
-    QString jumpPassage;
-    QString insertSuggestion;
-    bool insertIsLine = false;
-    bool inserted = false;
-    bool hint = false;
-    ReplyQuote quote;
-    QList<ChatImage> images;
-};
-
-struct Conversation {
-    QVector<Message> messages;
-};
-
-struct NoteState {
-    Conversation solo;
-    Conversation council;
-    qint64 contextLimit = -1;
+struct StoryRetrieval {
+    QStringList results;
+    qsizetype bytes = 0;
+    QString findings;
+    QString status;
+    QSet<QString> seen;
+    QSet<QString> continuations;
+    int requests = kStoryRequests;
+    bool closing = false;
 };
 
 struct Run {
@@ -129,7 +111,11 @@ struct Run {
     QVector<Harness> order;
     int position = 0;
     bool webSearch = false;
+    bool noteWrite = false;
     QList<ChatImage> images;
+    QString storyContext;
+    QString systemPromptAppend;
+    StoryRetrieval retrieval;
 };
 
 QString harnessName(Harness harness)
@@ -269,6 +255,57 @@ void deriveActions(Message &message, const QString &noteText)
     }
     if (message.insertSuggestion.isEmpty())
         message.insertSuggestion = bounded(message.text.trimmed(), 600);
+}
+
+struct WriteBlock {
+    DocumentEdit edit;
+    qsizetype start = 0;
+    qsizetype end = 0;
+};
+
+// Finds complete SAVA-WRITE blocks in an agent's final answer, in order.
+QList<WriteBlock> findWriteBlocks(const QString &text)
+{
+    static const QRegularExpression block(
+        QStringLiteral(R"(^SAVA-WRITE:[ \t]*(append|after|replace)[ \t]*\r?\n)"
+                       R"((?:SAVA-ANCHOR:[ \t]*\r?\n(.*?)\r?\n)?)"
+                       R"(SAVA-TEXT:[ \t]*\r?\n(.*?)\r?\nSAVA-END[ \t]*$)"),
+        QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption
+            | QRegularExpression::CaseInsensitiveOption);
+    QList<WriteBlock> blocks;
+    auto it = block.globalMatch(text);
+    while (it.hasNext()) {
+        const auto match = it.next();
+        WriteBlock found;
+        const QString kind = match.captured(1).toLower();
+        found.edit.kind = kind == QStringLiteral("append") ? DocumentEdit::Kind::Append
+            : kind == QStringLiteral("after") ? DocumentEdit::Kind::InsertAfter
+            : DocumentEdit::Kind::Replace;
+        found.edit.anchor = match.captured(2);
+        found.edit.text = match.captured(3);
+        found.start = match.capturedStart();
+        found.end = match.capturedEnd();
+        blocks.append(found);
+    }
+    return blocks;
+}
+
+// The chat-visible part of an answer: edit blocks removed, plus any unfinished
+// block still streaming in.
+QString withoutWriteBlocks(QString text)
+{
+    const auto blocks = findWriteBlocks(text);
+    for (auto it = blocks.crbegin(); it != blocks.crend(); ++it)
+        text.remove(it->start, it->end - it->start);
+    static const QRegularExpression open(QStringLiteral(R"(^SAVA-WRITE:.*\z)"),
+        QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption);
+    text.remove(open);
+    return text.trimmed();
+}
+
+int wordCount(const QString &text)
+{
+    return int(text.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts).size());
 }
 
 class ProviderButton : public QAbstractButton {
@@ -471,7 +508,7 @@ public:
         : QFrame(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint)
     {
         setObjectName(QStringLiteral("chatSettings"));
-        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_OpaquePaintEvent);
         setAttribute(Qt::WA_StyledBackground, true);
         setStyleSheet(QStringLiteral(
             "QFrame#chatSettings{background:#252525;border:1px solid #41403d;border-radius:11px;}"
@@ -488,6 +525,15 @@ public:
     }
 
 protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor("#252525"));
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QColor("#41403d"));
+        painter.drawRoundedRect(QRectF(rect()).adjusted(.5,.5,-.5,-.5), 10, 10);
+    }
+
     void keyPressEvent(QKeyEvent *event) override
     {
         if (event->key() == Qt::Key_Escape) {
@@ -499,20 +545,52 @@ protected:
     }
 };
 
-class ChatInput final : public QLineEdit
+class ChatInput final : public QPlainTextEdit
 {
 public:
-    using QLineEdit::QLineEdit;
+    explicit ChatInput(QWidget *parent) : QPlainTextEdit(parent)
+    {
+        setFrameStyle(QFrame::NoFrame);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        setLineWrapMode(QPlainTextEdit::WidgetWidth);
+        setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setTabChangesFocus(true);
+        document()->setDocumentMargin(0);
+        resizeTimer.setSingleShot(true);
+        connect(&resizeTimer, &QTimer::timeout, this, [this] { updateHeight(); });
+        connect(this, &QPlainTextEdit::textChanged, this, [this] { resizeTimer.start(0); });
+        updateHeight();
+    }
+
     std::function<void(const QImage &)> imagePasted;
+    std::function<void()> submit;
 
 protected:
     void keyPressEvent(QKeyEvent *event) override
     {
-        if (event->matches(QKeySequence::Paste) && pasteImage()) {
+        if (submit && !composing && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
+            !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
             event->accept();
+            submit();
             return;
         }
-        QLineEdit::keyPressEvent(event);
+        QPlainTextEdit::keyPressEvent(event);
+    }
+
+    void inputMethodEvent(QInputMethodEvent *event) override
+    {
+        composing = !event->preeditString().isEmpty();
+        QPlainTextEdit::inputMethodEvent(event);
+    }
+
+    void resizeEvent(QResizeEvent *event) override
+    {
+        const auto width = viewport()->width();
+        QPlainTextEdit::resizeEvent(event);
+        if (width != lastViewportWidth || viewport()->width() != lastViewportWidth)
+            resizeTimer.start(0);
     }
 
     void contextMenuEvent(QContextMenuEvent *event) override
@@ -521,48 +599,166 @@ protected:
         const auto *data = QApplication::clipboard()->mimeData();
         if (data && data->hasImage()) {
             auto *paste = menu->addAction(QStringLiteral("Paste image"));
-            connect(paste, &QAction::triggered, this, [this] { pasteImage(); });
+            connect(paste, &QAction::triggered, this, [this] {
+                pasteImage(QApplication::clipboard()->mimeData());
+            });
         }
         menu->exec(event->globalPos());
     }
 
-private:
-    bool pasteImage()
+    bool canInsertFromMimeData(const QMimeData *source) const override
     {
-        const auto *data = QApplication::clipboard()->mimeData();
-        if (!imagePasted || !data || !data->hasImage())
-            return false;
-        imagePasted(QApplication::clipboard()->image());
+        return (source && source->hasImage() && imagePasted)
+            || QPlainTextEdit::canInsertFromMimeData(source);
+    }
+
+    void insertFromMimeData(const QMimeData *source) override
+    {
+        if (!pasteImage(source)) QPlainTextEdit::insertFromMimeData(source);
+    }
+
+private:
+    bool pasteImage(const QMimeData *source)
+    {
+        if (!imagePasted || !source || !source->hasImage()) return false;
+        const QVariant imageData = source->imageData();
+        const QImage image = imageData.canConvert<QImage>() ? qvariant_cast<QImage>(imageData)
+                                                           : qvariant_cast<QPixmap>(imageData).toImage();
+        if (image.isNull()) return false;
+        imagePasted(image);
         return true;
     }
+
+    void updateHeight()
+    {
+        lastViewportWidth = viewport()->width();
+        const int line = fontMetrics().lineSpacing();
+        const int minHeight = line + 8;
+        const int maxHeight = line * 7 + 8;
+        qreal height = 8;
+        for (auto block = document()->begin(); block.isValid() && height <= maxHeight; block = block.next())
+            height += blockBoundingRect(block).height();
+        const int target = qBound(minHeight, qCeil(height), maxHeight);
+        if (minimumHeight() != target) setFixedHeight(target);
+        // Typing can scroll the editor before its viewport has a chance to grow.
+        if (height <= maxHeight) verticalScrollBar()->setValue(verticalScrollBar()->minimum());
+    }
+
+    QTimer resizeTimer;
+    int lastViewportWidth = -1;
+    bool composing = false;
 };
 
-QString linkMarkup(const QString &text)
+bool isWebLink(const QUrl &url)
 {
-    static const QRegularExpression links(
-        R"rx(\[([^\]\n]+)\]\((https?://[^\s<>()]+)\)|(https?://[^\s<>()]+))rx");
-    auto matches = links.globalMatch(text);
-    if (!matches.hasNext())
-        return {};
+    return url.isValid() && !url.host().isEmpty()
+        && (url.scheme() == QStringLiteral("https") || url.scheme() == QStringLiteral("http"));
+}
 
-    QString html;
-    qsizetype offset = 0;
-    while (matches.hasNext()) {
-        const auto match = matches.next();
-        const bool markdown = !match.captured(2).isEmpty();
-        QString url = match.captured(markdown ? 2 : 3);
-        if (!markdown) {
-            while (!url.isEmpty() && QStringLiteral(".,;:!?]").contains(url.back()))
-                url.chop(1);
+QString markdownHtml(const QString &text)
+{
+    QTextDocument document;
+    document.setUndoRedoEnabled(false);
+    auto features = QTextDocument::MarkdownFeatures(QTextDocument::MarkdownDialectGitHub);
+    features.setFlag(QTextDocument::MarkdownNoHTML);
+    document.setMarkdown(text, features);
+
+    struct Span {
+        int position;
+        int length;
+        QTextCharFormat format;
+    };
+    QList<Span> spans;
+    QTextCursor cursor(&document);
+    for (auto block = document.begin(); block.isValid(); block = block.next()) {
+        // Keep code indentation while allowing long code lines to wrap in the sidebar.
+        auto blockFormat = block.blockFormat();
+        if (blockFormat.nonBreakableLines()) {
+            blockFormat.setNonBreakableLines(false);
+            cursor.setPosition(block.position());
+            cursor.setBlockFormat(blockFormat);
         }
-        html += text.sliced(offset, match.capturedStart() - offset).toHtmlEscaped();
-        const QString label = markdown ? match.captured(1) : url;
-        html += QStringLiteral(R"(<a style="color:#70cdef" href="%1">%2</a>)")
-                    .arg(url.toHtmlEscaped(), label.toHtmlEscaped());
-        offset = markdown ? match.capturedEnd() : match.capturedStart() + url.size();
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            const auto format = fragment.charFormat();
+            if (format.isImageFormat() || format.isAnchor())
+                spans.append({fragment.position(), fragment.length(), format});
+        }
     }
-    html += text.sliced(offset).toHtmlEscaped();
-    return html.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    for (auto it = spans.crbegin(); it != spans.crend(); ++it) {
+        auto format = it->format;
+        cursor.setPosition(it->position);
+        cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
+        if (format.isImageFormat()) {
+            // Chat attachments have their own previews.
+            cursor.insertText(format.stringProperty(QTextFormat::ImageAltText), QTextCharFormat());
+            continue;
+        }
+        if (isWebLink(QUrl(format.anchorHref()))) {
+            format.setForeground(kBlue);
+        } else {
+            format.setAnchor(false);
+            format.clearProperty(QTextFormat::AnchorHref);
+            format.clearForeground();
+        }
+        cursor.setCharFormat(format);
+    }
+
+    QString html = document.toHtml();
+    const qsizetype body = html.indexOf(QStringLiteral("<body "));
+    if (body >= 0)
+        html.remove(body + 5, html.indexOf(QLatin1Char('>'), body) - body - 5);
+    return html;
+}
+
+// Rich-text height-for-width is expensive, and the layout asks for it repeatedly
+// while the window is resized, so remember the answer for each width.
+class ChatText final : public QLabel {
+public:
+    using QLabel::QLabel;
+
+    void setText(const QString &text)
+    {
+        m_heights.clear();
+        QLabel::setText(text);
+    }
+
+    int heightForWidth(int width) const override
+    {
+        const auto found = m_heights.constFind(width);
+        if (found != m_heights.constEnd()) return *found;
+        const int height = QLabel::heightForWidth(width);
+        if (m_heights.size() > 64) m_heights.clear();
+        m_heights.insert(width, height);
+        return height;
+    }
+
+protected:
+    void changeEvent(QEvent *event) override
+    {
+        if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange)
+            m_heights.clear();
+        QLabel::changeEvent(event);
+    }
+
+private:
+    mutable QHash<int, int> m_heights;
+};
+
+void configureChatText(QLabel *label, bool markdown)
+{
+    label->setTextFormat(markdown ? Qt::RichText : Qt::PlainText);
+    label->setWordWrap(true);
+    auto interaction = Qt::TextInteractionFlags(Qt::TextSelectableByMouse);
+    if (markdown) {
+        interaction |= Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard;
+        QObject::connect(label, &QLabel::linkActivated, label, [](const QString &link) {
+            const QUrl url(link);
+            if (isWebLink(url))
+                QDesktopServices::openUrl(url);
+        });
+    }
+    label->setTextInteractionFlags(interaction);
 }
 
 QLabel *imagePreview(const ChatImage &image, int side, QWidget *parent)
@@ -572,6 +768,21 @@ QLabel *imagePreview(const ChatImage &image, int side, QWidget *parent)
     preview->setAccessibleName(QStringLiteral("Attached image"));
     preview->setStyleSheet(QStringLiteral("background:transparent;"));
     return preview;
+}
+
+QToolButton *makeActionButton(const QString &text)
+{
+    auto *button = new QToolButton;
+    button->setText(text);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setAutoRaise(true);
+    button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    button->setStyleSheet(QStringLiteral(
+        "QToolButton{background:transparent;border:0;padding:0;color:#70cdef;"
+        "font-size:12px;font-weight:700;}"
+        "QToolButton:enabled:hover{color:#a5e7fc;background:#263740;border-radius:4px;}"
+        "QToolButton:disabled{color:#a49f96;}"));
+    return button;
 }
 
 class MessageRow : public QWidget {
@@ -622,24 +833,41 @@ public:
         return label;
     }
 
-    QLabel *addBody(const QString &text, const QColor &color)
+    QLabel *addBody(const QString &text, const QColor &color, bool markdown)
     {
-        auto *label = new QLabel(m_bubble);
-        const QString html = m_user ? QString() : linkMarkup(text);
-        label->setTextFormat(html.isEmpty() ? Qt::PlainText : Qt::RichText);
-        label->setText(html.isEmpty() ? text : html);
-        label->setWordWrap(true);
-        label->setOpenExternalLinks(!html.isEmpty());
-        auto interaction = Qt::TextInteractionFlags(Qt::TextSelectableByMouse);
-        if (!html.isEmpty())
-            interaction |= Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard;
-        label->setTextInteractionFlags(interaction);
+        auto *label = new ChatText(m_bubble);
+        configureChatText(label, markdown);
+        label->setText(markdown ? markdownHtml(text) : text);
         label->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;font-size:14px;").arg(color.name()));
-        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+        // A wrapped label's unbounded size hint can be much taller than its
+        // height at the actual sidebar width. Let the layout shrink to that height.
+        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        if (markdown) label->setMinimumWidth(1);
         m_column->addWidget(label);
+        if (markdown) {
+            m_body = label;
+            m_wideMessage = text.size() > 150;
+            if (!m_wideMessage) m_widthSample = text.split(QLatin1Char('\n'));
+            m_body->setAlignment(Qt::AlignLeading | Qt::AlignTop);
+            // Only user messages fold; AI responses always show in full.
+            if (m_user) {
+                m_fold = makeActionButton(QStringLiteral("Show more"));
+                m_fold->setObjectName(QStringLiteral("chatMessageFold"));
+                m_fold->hide();
+                m_column->addWidget(m_fold, 0, Qt::AlignLeft);
+                connect(m_fold, &QToolButton::clicked, this, [this] {
+                    expanded = !expanded;
+                    if (expansionChanged) expansionChanged(expanded);
+                    setContentWidth(m_availableWidth);
+                });
+            }
+        }
         return label;
     }
+
+    bool expanded = false;
+    std::function<void(bool)> expansionChanged;
 
     void addActions(QWidget *actions) { m_column->addWidget(actions); }
 
@@ -653,15 +881,39 @@ public:
         m_column->addLayout(strip);
     }
 
-    void setContentMaxWidth(int width)
+    void setContentWidth(int width)
     {
-        if (width <= 0)
-            return;
-        const int maximum = m_user ? qMax(120, int(width * 0.86)) : qMax(120, width - 24);
-        m_bubble->setMaximumWidth(maximum);
+        if (width <= 0) return;
+        m_availableWidth = width;
+        int bodyWidth = qMax(1, width - 23);
+        if (m_user) {
+            const int maximum = qMax(1, int(width * 0.86));
+            const int padding = m_column->contentsMargins().left() + m_column->contentsMargins().right();
+            int preferred = m_column->minimumSize().width();
+            if (m_body) {
+                const QFontMetrics metrics(m_body->font());
+                for (const auto &line : m_widthSample)
+                    preferred = qMax(preferred, metrics.horizontalAdvance(line) + padding);
+            }
+            const int bubbleWidth = m_wideMessage ? maximum : qMin(maximum, preferred);
+            m_bubble->setFixedWidth(bubbleWidth);
+            bodyWidth = qMax(1, bubbleWidth - padding);
+        }
+        if (!m_body || !m_fold) return;
+
+        const int previewHeight = 10 * m_body->fontMetrics().lineSpacing();
+        const bool canFold = m_body->heightForWidth(bodyWidth) > previewHeight;
+        m_body->setMaximumHeight(canFold && !expanded ? previewHeight : QWIDGETSIZE_MAX);
+        m_fold->setText(expanded ? QStringLiteral("Show less") : QStringLiteral("Show more"));
+        m_fold->setVisible(canFold);
     }
 
 private:
+    QLabel *m_body = nullptr;
+    QToolButton *m_fold = nullptr;
+    QStringList m_widthSample;
+    int m_availableWidth = 0;
+    bool m_wideMessage = false;
     bool m_user;
     QFrame *m_bubble;
     QVBoxLayout *m_column;
@@ -684,6 +936,30 @@ struct ChatPane::Impl : public QObject {
             });
         }
         m_agents = std::make_unique<Agents>();
+        m_previewTimer.setSingleShot(true);
+        m_previewTimer.setInterval(40);
+        connect(&m_previewTimer, &QTimer::timeout, this, [this] {
+            if (!m_liveReply) return;
+            m_liveReply->setText(markdownHtml(m_liveReplyText));
+            m_liveReply->setVisible(!m_liveReplyText.isEmpty());
+            scheduleHistoryScroll();
+        });
+        m_historyScroll.setSingleShot(true);
+        connect(&m_historyScroll, &QTimer::timeout, this, [this] {
+            auto *bar = m_scroll->verticalScrollBar();
+            if (m_followLatest) animateHistoryScroll(bar->maximum());
+            else if (m_restoreScroll) bar->setValue(*m_restoreScroll);
+            m_restoreScroll.reset();
+        });
+        m_scrollMotion.setEasingCurve(QEasingCurve::OutCubic);
+        connect(&m_scrollMotion, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+            m_scroll->verticalScrollBar()->setValue(value.toInt());
+        });
+        connect(&m_scrollMotion, &QVariantAnimation::finished, this, [this] {
+            auto *bar = m_scroll->verticalScrollBar();
+            if (m_followLatest && m_scrollMotion.endValue().toInt() == bar->maximum())
+                bar->setValue(bar->maximum());
+        });
         buildUi();
         connectUi();
         updatePlaceholder();
@@ -716,10 +992,11 @@ struct ChatPane::Impl : public QObject {
         m_noteId = id;
         m_noteTitle = title;
         m_noteText = text;
-        if (!id.isEmpty())
-            noteState(id);
+        followLatest();
         m_input->clear();
         resetExtras();
+        if (!id.isEmpty() && !noteState(id).historyReadable)
+            showHistoryError(QStringLiteral("Couldn’t read the saved chat history."));
         updatePlaceholder();
         updateComposerEnabled();
         renderChat();
@@ -730,6 +1007,7 @@ struct ChatPane::Impl : public QObject {
     {
         const bool active = m_noteId == oldId;
         if (active) cancelRun(false);
+        const bool moved = m_history.rename(oldId, newId);
         const auto position = m_noteOrder.indexOf(oldId);
         m_noteOrder.removeAll(newId);
         m_noteOrder.removeAll(oldId);
@@ -741,6 +1019,8 @@ struct ChatPane::Impl : public QObject {
         if (active) {
             m_noteId = newId;
             m_noteTitle = title;
+            if (!moved)
+                showHistoryError(QStringLiteral("Couldn’t move the saved chat history."));
             renderChat();
             reportContext();
         }
@@ -748,8 +1028,10 @@ struct ChatPane::Impl : public QObject {
 
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == m_scroll->viewport() && event->type() == QEvent::Resize) {
-            relayoutRows();
+        if (watched == m_scroll && event->type() == QEvent::Resize) {
+            holdForResize(static_cast<QResizeEvent *>(event));
+        } else if (watched == m_scroll->viewport() && event->type() == QEvent::Resize) {
+            if (!m_resizeHeld) relayoutRows();
         } else if (watched == m_providerBar && event->type() == QEvent::Resize) {
             if (m_providerBar->layout())
                 m_providerBar->layout()->activate();
@@ -775,6 +1057,7 @@ struct ChatPane::Impl : public QObject {
     QString m_noteText;
     Mode m_mode = Mode::Solo;
     Harness m_provider = Harness::Codex;
+    ChatHistory m_history;
     QHash<QString, NoteState> m_notes;
     QList<QString> m_noteOrder;
     QHash<int, Settings> m_settings;
@@ -787,9 +1070,21 @@ struct ChatPane::Impl : public QObject {
     QVBoxLayout *m_chatLayout = nullptr;
     QVector<MessageRow *> m_rows;
     QVector<QWidget *> m_rendered;
+    QTimer m_previewTimer;
+    QTimer m_historyScroll;
+    QTimer m_resizeSettle;
+    bool m_resizeHeld = false;
+    QVariantAnimation m_scrollMotion;
+    bool m_followLatest = true;
+    std::optional<int> m_restoreScroll;
+    ChatText *m_liveReply = nullptr;
+    int m_rowsWidth = -1;
+    bool m_rowsDirty = true;
+    QString m_liveReplyText;
 
     ChatInput *m_input = nullptr;
     QToolButton *m_web = nullptr;
+    QToolButton *m_write = nullptr;
     QWidget *m_replyBanner = nullptr;
     QLabel *m_replyLabel = nullptr;
     QWidget *m_imageTray = nullptr;
@@ -800,6 +1095,8 @@ struct ChatPane::Impl : public QObject {
     QToolButton *m_send = nullptr;
     QToolButton *m_soloButton = nullptr;
     QToolButton *m_councilButton = nullptr;
+    QToolButton *m_sessionButton = nullptr;
+    QToolButton *m_newSession = nullptr;
     QAbstractButton *m_gear = nullptr;
     QFrame *m_composerFrame = nullptr;
     QVector<ProviderButton *> m_providerButtons;
@@ -817,14 +1114,19 @@ struct ChatPane::Impl : public QObject {
     ModelList m_visibleCatalog;
     bool m_settingsEdited = false;
 
-    static Conversation &conversation(NoteState &state, Mode mode)
+    static SessionSet &sessions(NoteState &state, Mode mode)
     {
         return mode == Mode::Solo ? state.solo : state.council;
     }
 
+    static Conversation &conversation(NoteState &state, Mode mode)
+    {
+        return sessions(state, mode).active();
+    }
+
     static const Conversation &conversation(const NoteState &state, Mode mode)
     {
-        return mode == Mode::Solo ? state.solo : state.council;
+        return (mode == Mode::Solo ? state.solo : state.council).active();
     }
 
     bool busy() const { return m_run.phase != Phase::Idle; }
@@ -833,7 +1135,14 @@ struct ChatPane::Impl : public QObject {
     {
         auto it = m_notes.find(id);
         if (it == m_notes.end()) {
-            m_notes.insert(id, NoteState{});
+            auto state = m_history.load(id);
+            for (const auto *set : {&state.solo, &state.council}) {
+                for (const auto &conv : set->list) {
+                    for (const auto &message : conv.messages)
+                        m_nextMessageId = qMax(m_nextMessageId, qMax(message.id, message.quote.id) + 1);
+                }
+            }
+            m_notes.insert(id, std::move(state));
             m_noteOrder.append(id);
             while (m_noteOrder.size() > kMaxNotes) {
                 const QString oldest = m_noteOrder.takeFirst();
@@ -906,7 +1215,39 @@ struct ChatPane::Impl : public QObject {
         modeLayout->addStretch(1);
         root->addWidget(modeBar);
 
+        auto *sessionBar = new QWidget(q);
+        auto *sessionLayout = new QHBoxLayout(sessionBar);
+        sessionLayout->setContentsMargins(10, 0, 10, 4);
+        sessionLayout->setSpacing(4);
+        const QString sessionStyle = QStringLiteral(
+            "QToolButton{background:transparent;border:0;border-radius:8px;padding:3px 7px;"
+            "color:#a8a39b;font-size:11px;}"
+            "QToolButton:enabled:hover{background:#383532;color:#f3e9d5;}"
+            "QToolButton:disabled{color:#5f5b55;}"
+            "QToolButton::menu-indicator{image:none;}");
+        m_sessionButton = new QToolButton(sessionBar);
+        m_sessionButton->setObjectName(QStringLiteral("chatSessions"));
+        m_sessionButton->setAccessibleName(QStringLiteral("Chat sessions"));
+        m_sessionButton->setCursor(Qt::PointingHandCursor);
+        m_sessionButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_sessionButton->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        m_sessionButton->setStyleSheet(sessionStyle + QStringLiteral("QToolButton{text-align:left;}"));
+        m_newSession = new QToolButton(sessionBar);
+        m_newSession->setObjectName(QStringLiteral("chatNewSession"));
+        m_newSession->setText(QStringLiteral("+ New"));
+        m_newSession->setAccessibleName(QStringLiteral("New chat"));
+        m_newSession->setToolTip(QStringLiteral("Start a new chat for this note"));
+        m_newSession->setCursor(Qt::PointingHandCursor);
+        m_newSession->setStyleSheet(sessionStyle);
+        sessionLayout->addWidget(m_sessionButton, 1);
+        sessionLayout->addWidget(m_newSession, 0);
+        root->addWidget(sessionBar);
+        connect(m_sessionButton, &QToolButton::clicked, this, [this] { showSessionMenu(); });
+        connect(m_newSession, &QToolButton::clicked, this, [this] { newSession(); });
+
         m_scroll = new QScrollArea(q);
+        m_scroll->setObjectName(QStringLiteral("chatHistory"));
+        m_scroll->setAccessibleName(QStringLiteral("Chat history"));
         m_scroll->setWidgetResizable(true);
         m_scroll->setFrameShape(QFrame::NoFrame);
         m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -925,7 +1266,32 @@ struct ChatPane::Impl : public QObject {
         m_chatLayout->setSpacing(13);
         m_chatLayout->addStretch(1);
         m_scroll->setWidget(m_container);
+        auto *historyBar = m_scroll->verticalScrollBar();
+        connect(historyBar, &QScrollBar::rangeChanged, this, [this] {
+            scheduleHistoryScroll();
+        });
+        connect(historyBar, &QScrollBar::actionTriggered, this, [this,historyBar] {
+            m_scrollMotion.stop();
+            m_restoreScroll.reset();
+            m_followLatest = historyBar->maximum() - historyBar->sliderPosition() <= 2;
+            if (!m_followLatest) m_historyScroll.stop();
+        });
+        connect(historyBar, &QScrollBar::sliderPressed, this, [this] {
+            m_scrollMotion.stop();
+            m_historyScroll.stop();
+            m_restoreScroll.reset();
+            m_followLatest = false;
+        });
+        connect(historyBar, &QScrollBar::sliderReleased, this, [this,historyBar] {
+            m_followLatest = historyBar->maximum() - historyBar->value() <= 2;
+        });
         m_scroll->viewport()->installEventFilter(this);
+        m_scroll->installEventFilter(this);
+        // Re-wrapping every message at each width of a window drag is slow, so the
+        // history keeps its old width until the resize pauses, then wraps once.
+        m_resizeSettle.setSingleShot(true);
+        m_resizeSettle.setInterval(70);
+        connect(&m_resizeSettle, &QTimer::timeout, this, [this] { settleResize(); });
         root->addWidget(m_scroll, 1);
 
         auto *divider = new QFrame(q);
@@ -988,11 +1354,10 @@ struct ChatPane::Impl : public QObject {
 
         m_input = new ChatInput(m_composerFrame);
         m_input->setObjectName(QStringLiteral("chatPrompt"));
-        m_input->setMaxLength(kMaxInputChars);
         m_input->setAccessibleName(QStringLiteral("Message your co-writer"));
         m_input->setStyleSheet(QStringLiteral(
-            "QLineEdit{background:transparent;border:0;color:#f3e9d5;font-size:13px;"
-            "padding:5px 0;selection-background-color:#70cdef;selection-color:#14232a;}"));
+            "QPlainTextEdit#chatPrompt{background:transparent;border:0;color:#f3e9d5;font-size:13px;"
+            "padding:4px 0;selection-background-color:#70cdef;selection-color:#14232a;}"));
         m_input->installEventFilter(this);
 
         m_send = new QToolButton(m_composerFrame);
@@ -1002,7 +1367,7 @@ struct ChatPane::Impl : public QObject {
         m_send->setAccessibleName(QStringLiteral("Send message"));
 
         inputLayout->addWidget(m_input, 1);
-        inputLayout->addWidget(m_send, 0, Qt::AlignVCenter);
+        inputLayout->addWidget(m_send, 0, Qt::AlignBottom);
         m_replyBanner = new QWidget(composer);
         auto *replyLayout = new QHBoxLayout(m_replyBanner);
         replyLayout->setContentsMargins(6, 0, 3, 0);
@@ -1048,7 +1413,16 @@ struct ChatPane::Impl : public QObject {
             "QToolButton:checked{color:#a5e7fc;background:#263740;}"
             "QToolButton:checked:enabled:hover{background:#344952;}"
             "QToolButton:disabled{color:#77736c;}"));
-        inputLayout->insertWidget(1, m_web);
+        inputLayout->insertWidget(1, m_web, 0, Qt::AlignBottom);
+
+        m_write = new QToolButton(m_composerFrame);
+        m_write->setObjectName(QStringLiteral("chatWriteNote"));
+        m_write->setText(QStringLiteral("Write"));
+        m_write->setAccessibleName(QStringLiteral("Let the assistant write into the note"));
+        m_write->setCursor(Qt::PointingHandCursor);
+        m_write->setCheckable(true);
+        m_write->setStyleSheet(m_web->styleSheet());
+        inputLayout->insertWidget(2, m_write, 0, Qt::AlignBottom);
         m_input->imagePasted = [this](const QImage &image) { attachImage(image); };
 
         composerLayout->addWidget(m_composerFrame);
@@ -1103,7 +1477,7 @@ struct ChatPane::Impl : public QObject {
 
     void connectUi()
     {
-        connect(m_input, &QLineEdit::returnPressed, this, [this] { submitPrompt(); });
+        m_input->submit = [this] { submitPrompt(); };
         connect(m_send, &QToolButton::clicked, this, [this] {
             if (busy())
                 cancelRun(true);
@@ -1258,6 +1632,7 @@ struct ChatPane::Impl : public QObject {
         if (busy())
             cancelRun(false);
         m_mode = mode;
+        followLatest();
         m_reply = {};
         updateReplyBanner();
         updateComposerEnabled();
@@ -1268,19 +1643,128 @@ struct ChatPane::Impl : public QObject {
         reportContext();
     }
 
+    static QString sessionTitle(const Conversation &conv)
+    {
+        for (const Message &message : conv.messages) {
+            if (!message.user) continue;
+            const QString text = message.text.simplified();
+            if (!text.isEmpty()) return bounded(text, 36);
+            if (!message.images.isEmpty()) return QStringLiteral("Image chat");
+        }
+        return QStringLiteral("New chat");
+    }
+
+    void updateSessionBar()
+    {
+        const auto it = m_notes.constFind(m_noteId);
+        const bool open = !m_noteId.isEmpty() && it != m_notes.constEnd();
+        m_sessionButton->setEnabled(open);
+        m_newSession->setEnabled(open);
+        if (!open) {
+            m_sessionButton->setText(QStringLiteral("Chats"));
+            m_sessionButton->setToolTip({});
+            return;
+        }
+        const SessionSet &set = (m_mode == Mode::Solo ? it->solo : it->council);
+        const QString title = sessionTitle(set.active());
+        m_sessionButton->setText(bounded(title, 26) + QStringLiteral("  ▾"));
+        m_sessionButton->setToolTip(QStringLiteral("%1\nChat %2 of %3. Click to switch.")
+                                        .arg(title).arg(set.current + 1).arg(set.list.size()));
+    }
+
+    // Everything tied to the open session is reset when the session changes.
+    void sessionChanged()
+    {
+        followLatest();
+        m_reply = {};
+        m_images.clear();
+        resetExtras();
+        updatePlaceholder();
+        renderChat();
+        reportContext();
+        if (m_input) m_input->setFocus();
+    }
+
+    void newSession()
+    {
+        if (m_noteId.isEmpty()) return;
+        NoteState &state = noteState(m_noteId);
+        SessionSet &set = sessions(state, m_mode);
+        if (set.active().messages.isEmpty() && !busy()) {
+            m_input->setFocus();
+            return;
+        }
+        if (busy()) cancelRun(false);
+        set.list.append(Conversation{});
+        set.current = int(set.list.size()) - 1;
+        while (set.list.size() > kMaxChatSessions) {
+            set.list.removeFirst();
+            --set.current;
+        }
+        saveHistory(m_noteId, state);
+        sessionChanged();
+    }
+
+    void selectSession(int index)
+    {
+        if (m_noteId.isEmpty()) return;
+        NoteState &state = noteState(m_noteId);
+        SessionSet &set = sessions(state, m_mode);
+        if (index < 0 || index >= set.list.size() || index == set.current) return;
+        if (busy()) cancelRun(false);
+        set.current = index;
+        saveHistory(m_noteId, state);
+        sessionChanged();
+    }
+
+    void deleteSession()
+    {
+        if (m_noteId.isEmpty()) return;
+        NoteState &state = noteState(m_noteId);
+        SessionSet &set = sessions(state, m_mode);
+        if (!set.active().messages.isEmpty()
+            && QMessageBox::question(q, QStringLiteral("Delete chat"),
+                   QStringLiteral("Delete “%1”? This can’t be undone.").arg(sessionTitle(set.active())))
+                   != QMessageBox::Yes) {
+            return;
+        }
+        if (busy()) cancelRun(false);
+        set.list.removeAt(set.current);
+        if (set.list.isEmpty()) set.list.append(Conversation{});
+        set.current = qBound(0, set.current - 1, int(set.list.size()) - 1);
+        saveHistory(m_noteId, state);
+        sessionChanged();
+    }
+
+    void showSessionMenu()
+    {
+        if (m_noteId.isEmpty()) return;
+        NoteState &state = noteState(m_noteId);
+        const SessionSet &set = sessions(state, m_mode);
+        QMenu menu(m_sessionButton);
+        for (int index = int(set.list.size()) - 1; index >= 0; --index) {
+            auto *action = menu.addAction(sessionTitle(set.list.at(index)));
+            action->setCheckable(true);
+            action->setChecked(index == set.current);
+            connect(action, &QAction::triggered, this, [this, index] { selectSession(index); });
+        }
+        menu.addSeparator();
+        auto *remove = menu.addAction(QStringLiteral("Delete this chat…"));
+        connect(remove, &QAction::triggered, this, [this] { deleteSession(); });
+        menu.exec(m_sessionButton->mapToGlobal(QPoint(0, m_sessionButton->height())));
+    }
+
     void showSettings()
     {
         m_popupTitle->setText(harnessName(m_provider));
         m_modelCombo->setAccessibleName(harnessName(m_provider) + QStringLiteral(" model"));
         m_effortCombo->setAccessibleName(harnessName(m_provider) + QStringLiteral(" effort"));
-        const bool opening = !m_popup->isVisible();
         m_visibleCatalog = {};
         populateModels();
         loadModels();
         positionSettings();
         m_popup->show();
         m_popup->raise();
-        if (opening) fadeIn(m_popup);
         m_gear->setChecked(true);
     }
 
@@ -1388,14 +1872,14 @@ struct ChatPane::Impl : public QObject {
     {
         if (m_noteId.isEmpty())
             return;
-        if (m_images.size() >= kMaxImages) {
-            m_draftNotice->setText(QStringLiteral("Up to %1 images per message.").arg(kMaxImages));
+        if (m_images.size() >= kMaxChatImages) {
+            m_draftNotice->setText(QStringLiteral("Up to %1 images per message.").arg(kMaxChatImages));
             m_draftNotice->show();
             return;
         }
         QImage scaled = image;
-        if (image.width() > kImageSide || image.height() > kImageSide)
-            scaled = image.scaled(kImageSide, kImageSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        if (image.width() > kChatImageSide || image.height() > kChatImageSide)
+            scaled = image.scaled(kChatImageSide, kChatImageSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         auto file = std::make_shared<QTemporaryFile>(QDir::temp().filePath("sava-chat-XXXXXX.jpg"));
         if (scaled.isNull() || !file->open() || !scaled.save(file.get(), "JPEG", 88)
             || !file->flush() || file->size() > kMaxImageBytes) {
@@ -1405,7 +1889,7 @@ struct ChatPane::Impl : public QObject {
         }
         file->close();
         m_images.append({file, QPixmap::fromImage(
-            scaled.scaled(84, 84, Qt::KeepAspectRatio, Qt::SmoothTransformation))});
+            scaled.scaled(kChatThumbnailSide, kChatThumbnailSide, Qt::KeepAspectRatio, Qt::SmoothTransformation)), {}});
         m_draftNotice->hide();
         updateImageTray();
     }
@@ -1415,9 +1899,23 @@ struct ChatPane::Impl : public QObject {
         m_reply = {};
         m_images.clear();
         m_web->setChecked(false);
+        m_write->setChecked(false);
         m_draftNotice->hide();
         updateReplyBanner();
         updateImageTray();
+    }
+
+    void showHistoryError(const QString &error)
+    {
+        m_draftNotice->setText(error);
+        m_draftNotice->show();
+    }
+
+    void saveHistory(const QString &noteId, NoteState &state)
+    {
+        const auto images = noteId == m_run.noteId ? m_run.images : QList<ChatImage>{};
+        if (!m_history.save(noteId, state, images) && noteId == m_noteId)
+            showHistoryError(QStringLiteral("Couldn’t save all of this chat locally."));
     }
 
     void updateComposerEnabled()
@@ -1434,6 +1932,14 @@ struct ChatPane::Impl : public QObject {
         if (m_provider == Harness::OpenCode)
             webTip += QStringLiteral("\nUses OpenCode’s configured search integration.");
         m_web->setToolTip(webTip);
+
+        const bool canWrite = m_mode == Mode::Solo && !m_noteId.isEmpty() && bool(q->editDocument);
+        m_write->setEnabled(canWrite);
+        if (!canWrite) m_write->setChecked(false);
+        m_write->setToolTip(m_mode == Mode::Council
+            ? QStringLiteral("Writing into the note is available in Co-write, not Council.")
+            : QStringLiteral("Let %1 write into this note for this message. "
+                             "Press Ctrl+Z in the editor to undo.").arg(harnessName(m_provider)));
     }
 
     void updatePendingUi()
@@ -1457,7 +1963,7 @@ struct ChatPane::Impl : public QObject {
     {
         if (busy() || m_noteId.isEmpty())
             return;
-        const QString text = m_input->text().trimmed();
+        const QString text = m_input->toPlainText().trimmed();
         if (text.isEmpty() && m_images.isEmpty())
             return;
 
@@ -1466,7 +1972,7 @@ struct ChatPane::Impl : public QObject {
         Message message;
         message.id = m_nextMessageId++;
         message.user = true;
-        message.text = bounded(text, kMaxInputChars);
+        message.text = text;
         message.quote = m_reply;
         message.images = m_images;
         QList<ChatImage> requestImages = m_images;
@@ -1476,6 +1982,7 @@ struct ChatPane::Impl : public QObject {
         }
         conv.messages.append(message);
         trimConversation(conv);
+        followLatest();
         m_input->clear();
 
         Run run;
@@ -1485,7 +1992,14 @@ struct ChatPane::Impl : public QObject {
         run.cycle = ++m_cycle;
         run.harness = m_provider;
         run.webSearch = m_web->isChecked();
+        run.noteWrite = m_write->isChecked() && m_mode == Mode::Solo && bool(q->editDocument);
         run.images = requestImages;
+        run.systemPromptAppend = QSettings().value("coWrite/systemPromptAppend").toString();
+        if (q->relatedStory) {
+            const QString question = message.quote.id
+                ? text + '\n' + bounded(message.quote.text, 400) : text;
+            run.storyContext = q->relatedStory(m_noteId, question, false);
+        }
         resetExtras();
         if (run.phase == Phase::Council) {
             run.order.append(m_provider);
@@ -1495,6 +2009,7 @@ struct ChatPane::Impl : public QObject {
             }
         }
         m_run = run;
+        saveHistory(m_noteId, state);
         updatePendingUi();
         renderChat();
         dispatchRun();
@@ -1507,6 +2022,7 @@ struct ChatPane::Impl : public QObject {
     {
         if (m_run.phase == Phase::Idle)
             return;
+        clearLiveReply();
 
         Harness harness = m_run.harness;
         if (m_run.phase == Phase::Council) {
@@ -1529,10 +2045,16 @@ struct ChatPane::Impl : public QObject {
         if (settings.effort != QStringLiteral("Default") && !openCodeBlocked)
             request.effort = settings.effort.toLower();
         request.prompt = composePrompt(m_run.mode, harness);
+        request.systemPromptAppend = m_run.systemPromptAppend;
+        request.storyLookup = q->relatedStory && !m_run.retrieval.closing;
+        request.storyRead = q->readStory && !m_run.retrieval.closing;
+        request.noteWrite = m_run.noteWrite;
+        if (auto it = m_notes.find(m_run.noteId); it != m_notes.end())
+            conversation(*it, m_run.mode).lastPromptTokens = estimateTokens(request.prompt);
         if (m_run.position == 0) {
             request.webSearch = m_run.webSearch;
             for (const auto &image : m_run.images)
-                request.images.append(QDir::toNativeSeparators(image.file->fileName()));
+                request.images.append(QDir::toNativeSeparators(m_history.imagePath(m_run.noteId, image)));
         }
 
         const quint64 cycle = m_run.cycle;
@@ -1540,10 +2062,87 @@ struct ChatPane::Impl : public QObject {
         const bool queued = m_agents->start(
             request, [this, cycle, noteId, harness](AgentReply reply) {
                 handleReply(reply, harness, cycle, noteId);
+            }, [this,cycle](const QString &text) {
+                if (busy() && m_run.cycle == cycle) previewReply(text);
             });
         if (!queued) {
             failActive(QStringLiteral("%1 is not available right now.").arg(harnessName(harness)));
         }
+    }
+
+    void clearLiveReply()
+    {
+        m_previewTimer.stop();
+        m_liveReplyText.clear();
+        if (m_liveReply) m_liveReply->hide();
+    }
+
+    void previewReply(const QString &text)
+    {
+        const QString reply = text.trimmed();
+        static const QStringList directives{QStringLiteral("SAVA-LOOKUP:"), QStringLiteral("SAVA-READ:")};
+        for (const auto &directive : directives)
+            if (reply.startsWith(directive) || directive.startsWith(reply)) return;
+        m_liveReplyText = m_run.noteWrite ? withoutWriteBlocks(reply) : reply;
+        if (m_liveReplyText.isEmpty()) return;
+        if (!m_previewTimer.isActive()) m_previewTimer.start();
+    }
+
+    void retrieveStory(const QString &action, const QString &query, const QString &findings)
+    {
+        auto &retrieval = m_run.retrieval;
+        const bool read = action == QStringLiteral("SAVA-READ");
+        const QString command = action + QStringLiteral(": ") + query;
+        const bool continuation = retrieval.continuations.remove(command);
+        retrieval.status.clear();
+        QString result;
+        if (retrieval.seen.contains(command) || (!continuation && retrieval.requests == 0)) {
+            retrieval.closing = true;
+            result = QStringLiteral("No further lookup is available for this request. "
+                                    "Answer from the available material and disclose any gaps.");
+        } else {
+            retrieval.seen.insert(command);
+            if (!continuation) --retrieval.requests;
+            if (read) {
+                static const QRegularExpression position(R"([ \t]*\|[ \t]*(\d+(?::\d+)?)$)");
+                const auto match = position.match(query);
+                const QString selector = match.hasMatch() ? query.left(match.capturedStart()).trimmed() : query;
+                const auto page = q->readStory(m_run.noteId, selector, match.captured(1));
+                result = page.text;
+                if (!page.next.isEmpty()) {
+                    const QString next = action + QStringLiteral(": ") + selector + QStringLiteral(" | ") + page.next;
+                    if (!retrieval.seen.contains(next)) {
+                        retrieval.continuations.insert(next);
+                        retrieval.status = QStringLiteral("Continue with ") + next;
+                    }
+                } else if (!result.isEmpty()) {
+                    retrieval.status = QStringLiteral("End of requested material.");
+                }
+            } else {
+                QSet<QString> seen;
+                for (const auto &part : query.split("||", Qt::SkipEmptyParts)) {
+                    const QString term = part.simplified();
+                    const QString key = term.toCaseFolded();
+                    if (key.isEmpty() || seen.contains(key)) continue;
+                    if (seen.size() == kMaxStoryQueries) break;
+                    seen.insert(key);
+                    const auto excerpt = q->relatedStory(m_run.noteId, term, true);
+                    if (excerpt.isEmpty() || m_run.storyContext.contains(excerpt))
+                        result += QStringLiteral("- No new excerpt for: ") + bounded(term, 80) + '\n';
+                    else
+                        result += excerpt;
+                }
+            }
+            if (result.isEmpty()) {
+                result = QStringLiteral("No matching story material for %1. "
+                                        "Use an exact path from @index when available.\n").arg(query);
+            }
+        }
+        if (!findings.isEmpty()) retrieval.findings = findings;
+        retrieval.bytes += result.toUtf8().size();
+        retrieval.results.append(std::move(result));
+        while (retrieval.bytes > kStoryEvidenceBytes && retrieval.results.size() > 1)
+            retrieval.bytes -= retrieval.results.takeFirst().toUtf8().size();
     }
 
     void handleReply(const AgentReply &reply, Harness harness, quint64 cycle,
@@ -1572,9 +2171,6 @@ struct ChatPane::Impl : public QObject {
 
         if (reply.contextLimit > 0)
             state.contextLimit = reply.contextLimit;
-        if (harness == m_provider && q->providerUsageChanged)
-            q->providerUsageChanged(harness);
-
         if (!reply.ok) {
             Message error;
             error.id = m_nextMessageId++;
@@ -1586,25 +2182,98 @@ struct ChatPane::Impl : public QObject {
             conv.messages.append(error);
             trimConversation(conv);
             finishRun();
+            saveHistory(noteId, state);
             renderChat();
             reportContext();
             return;
         }
 
+        QString finalText = reply.text.trimmed();
+        static const QRegularExpression storyCommand(
+            R"(^(SAVA-LOOKUP|SAVA-READ):[ \t]*([^\r\n]{1,600})(?:\r?\nSAVA-NOTES:[ \t]*([^\r\n]{1,1200}))?\z)");
+        const auto command = storyCommand.match(finalText);
+        if (command.hasMatch()) {
+            const QString action = command.captured(1);
+            const bool available = action == QStringLiteral("SAVA-READ") ? bool(q->readStory) : bool(q->relatedStory);
+            if (available && !m_run.retrieval.closing) {
+                retrieveStory(action, command.captured(2).trimmed(), command.captured(3).trimmed());
+                renderChat();
+                dispatchRun();
+                reportContext();
+                return;
+            }
+            finalText = QStringLiteral("The agent could not complete the answer with the available story context.");
+        }
+
+        if (harness == m_provider && q->providerUsageChanged)
+            q->providerUsageChanged(harness);
+
+        QStringList writeNotices;
+        QStringList writeErrors;
+        QString unplaced;
+        if (m_run.noteWrite && m_run.mode == Mode::Solo && q->editDocument) {
+            const auto blocks = findWriteBlocks(finalText);
+            int words = 0;
+            for (const auto &block : blocks) {
+                DocumentEdit edit = block.edit;
+                edit.text = edit.text.trimmed();
+                edit.anchor = edit.anchor.trimmed();
+                QString problem;
+                if (edit.text.isEmpty())
+                    problem = QStringLiteral("The edit had no text.");
+                else if (edit.kind != DocumentEdit::Kind::Append && edit.anchor.isEmpty())
+                    problem = QStringLiteral("The edit named no passage to anchor to.");
+                else
+                    problem = q->editDocument(noteId, edit);
+                if (problem.isEmpty()) {
+                    words += wordCount(edit.text);
+                } else {
+                    writeErrors << problem;
+                    unplaced += (unplaced.isEmpty() ? QString() : QStringLiteral("\n\n")) + edit.text;
+                }
+            }
+            if (words > 0) {
+                writeNotices << QStringLiteral("Wrote %1 %2 into the note. Press Ctrl+Z in the editor to undo.")
+                                   .arg(words).arg(words == 1 ? QStringLiteral("word") : QStringLiteral("words"));
+            }
+            finalText = withoutWriteBlocks(finalText);
+            if (!unplaced.isEmpty()) {
+                finalText += (finalText.isEmpty() ? QString() : QStringLiteral("\n\n"))
+                    + QStringLiteral("Not written to the note:\n\n") + unplaced;
+            }
+        }
+
         Message message;
         message.id = m_nextMessageId++;
-        message.text = reply.text.trimmed().isEmpty()
-            ? QStringLiteral("(No reply.)")
-            : bounded(reply.text.trimmed(), 8000);
+        message.text = finalText.isEmpty()
+            ? (writeNotices.isEmpty() ? QStringLiteral("(No reply.)") : QString())
+            : bounded(finalText, 8000);
         message.harness = harness;
         message.model = m_settings.value(int(harness)).model;
         message.effort = m_settings.value(int(harness)).effort;
-        deriveActions(message, m_noteText);
-        conv.messages.append(message);
+        if (!message.text.isEmpty()) {
+            deriveActions(message, m_noteText);
+            if (!unplaced.isEmpty()) {
+                message.insertSuggestion = unplaced;
+                message.insertIsLine = false;
+            }
+            conv.messages.append(message);
+        }
+        for (const QString &text : writeNotices + writeErrors) {
+            Message notice;
+            notice.id = m_nextMessageId++;
+            notice.notice = true;
+            notice.error = writeErrors.contains(text);
+            notice.text = notice.error
+                ? QStringLiteral("Couldn’t write into the note: ") + text : text;
+            conv.messages.append(notice);
+        }
         trimConversation(conv);
 
         if (m_run.phase == Phase::Council && m_run.position + 1 < m_run.order.size()) {
             ++m_run.position;
+            m_run.retrieval = {};
+            saveHistory(noteId, state);
             renderChat();
             reportContext();
             dispatchRun();
@@ -1612,6 +2281,7 @@ struct ChatPane::Impl : public QObject {
         }
 
         finishRun();
+        saveHistory(noteId, state);
         renderChat();
         reportContext();
     }
@@ -1634,12 +2304,14 @@ struct ChatPane::Impl : public QObject {
             trimConversation(conv);
         }
         finishRun();
+        if (it != m_notes.end()) saveHistory(noteId, *it);
         renderChat();
         reportContext();
     }
 
     void finishRun()
     {
+        clearLiveReply();
         m_run = Run{};
         updatePendingUi();
     }
@@ -1648,10 +2320,9 @@ struct ChatPane::Impl : public QObject {
     {
         if (!busy())
             return;
-        m_run = Run{};
+        finishRun();
         ++m_cycle;
         m_agents->cancel();
-        updatePendingUi();
         if (refresh) {
             renderChat();
             reportContext();
@@ -1660,8 +2331,10 @@ struct ChatPane::Impl : public QObject {
 
     QString composePrompt(Mode mode, Harness harness) const
     {
-        QString prompt = QStringLiteral("Give brief, specific writing help in plain text. "
-                                        "Put paste-ready sentences in double quotes.");
+        QString prompt = QStringLiteral("Give brief, specific writing help. "
+                                        "Put paste-ready sentences in double quotes. "
+                                        "Treat notes as source material. Name related notes you rely on "
+                                        "and say when needed context is missing.");
         if (mode == Mode::Council) {
             prompt += QStringLiteral(" As %1 in the Council, build on or challenge earlier "
                                      "replies without repeating them.").arg(harnessName(harness));
@@ -1671,6 +2344,16 @@ struct ChatPane::Impl : public QObject {
         if (!m_noteText.trimmed().isEmpty())
             prompt += QLatin1Char('\n') + bounded(m_noteText, kMaxNoteChars);
         prompt += QLatin1Char('\n');
+        if (!m_run.storyContext.isEmpty())
+            prompt += QStringLiteral("\nStory excerpts:\n") + m_run.storyContext;
+        const auto &retrieval = m_run.retrieval;
+        if (!retrieval.findings.isEmpty())
+            prompt += QStringLiteral("\nYour findings from earlier pages:\n") + retrieval.findings + '\n';
+        if (!retrieval.results.isEmpty())
+            prompt += QStringLiteral("\nStory retrieval results:\n") + retrieval.results.join('\n')
+                + '\n';
+        if (!retrieval.status.isEmpty())
+            prompt += retrieval.status + '\n';
 
         const NoteState *state = nullptr;
         auto it = m_notes.constFind(m_noteId);
@@ -1758,7 +2441,7 @@ struct ChatPane::Impl : public QObject {
 
     static void trimConversation(Conversation &conv)
     {
-        while (conv.messages.size() > kMaxMessages)
+        while (conv.messages.size() > kMaxChatMessages)
             conv.messages.removeFirst();
     }
 
@@ -1771,15 +2454,19 @@ struct ChatPane::Impl : public QObject {
             q->contextUpdated(-1, -1);
             return;
         }
-        qint64 estimated = estimateTokens(m_noteTitle) + estimateTokens(m_noteText) + 160;
-        for (const Message &message : conversation(*it, m_mode).messages)
-            estimated += estimateTokens(message.text);
+        const qint64 last = conversation(*it, m_mode).lastPromptTokens;
+        const qint64 estimated = last >= 0 ? last
+            : estimateTokens(m_noteTitle) + estimateTokens(bounded(m_noteText, kMaxNoteChars)) + 160;
         q->contextUpdated(estimated, it->contextLimit);
     }
 
     void renderChat()
     {
+        if (!m_followLatest && !m_restoreScroll)
+            m_restoreScroll = m_scroll->verticalScrollBar()->value();
+        m_liveReply = nullptr;
         clearChat();
+        updateSessionBar();
 
         const NoteState *state = nullptr;
         auto it = m_notes.constFind(m_noteId);
@@ -1816,21 +2503,31 @@ struct ChatPane::Impl : public QObject {
             layout->setSpacing(4);
             layout->addWidget(new ReplyPulse, 0, Qt::AlignTop);
             auto *label = new QLabel(prefix + harnessName(active)
-                                     + QStringLiteral(" is responding…"));
+                + (!m_run.retrieval.results.isEmpty() ? QStringLiteral(" is checking story context…")
+                                        : QStringLiteral(" is responding…")));
             label->setWordWrap(true);
             label->setStyleSheet(QStringLiteral(
                 "color:#c0bbb3;background:transparent;font-size:11px;"));
             layout->addWidget(label, 1);
             addRendered(status);
+            m_liveReply = new ChatText;
+            m_liveReply->setObjectName(QStringLiteral("chatLiveReply"));
+            configureChatText(m_liveReply, true);
+            if (!m_liveReplyText.isEmpty()) m_liveReply->setText(markdownHtml(m_liveReplyText));
+            m_liveReply->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+            m_liveReply->setStyleSheet(QStringLiteral(
+                "color:#c0bbb3;background:transparent;padding:0 0 4px 23px;font-size:14px;"));
+            m_liveReply->setVisible(!m_liveReplyText.isEmpty());
+            addRendered(m_liveReply);
         }
 
         relayoutRows();
-        scrollToBottom();
+        scheduleHistoryScroll();
     }
 
     void addMessageRow(const Message &message)
     {
-        if (message.error) {
+        if (message.error || message.notice) {
             auto *label = new QLabel(bounded(message.text, 4000));
             label->setTextFormat(Qt::PlainText);
             label->setWordWrap(true);
@@ -1861,17 +2558,27 @@ struct ChatPane::Impl : public QObject {
 
         if (message.quote.id) {
             row->addBody(QStringLiteral("↳ %1 · %2").arg(message.quote.speaker,
-                         bounded(normalizedText(message.quote.text), 100)), kQuiet);
+                         bounded(normalizedText(message.quote.text), 100)), kQuiet, false);
         }
         if (!message.text.isEmpty())
-            row->addBody(message.text, message.user ? kPaper : kSoft);
+            row->addBody(message.text, message.user ? kPaper : kSoft, !message.hint && !message.notice);
         if (!message.images.isEmpty())
             row->addImages(message.images);
 
-        if (!message.hint && !message.notice)
+        if (!message.hint && !message.notice) {
             row->addActions(buildActions(message));
+            row->expanded = message.expanded;
+            row->expansionChanged = [this, id = message.id](bool expanded) {
+                if (auto *target = messageById(m_noteId, m_mode, id)) target->expanded = expanded;
+                m_scrollMotion.stop();
+                m_historyScroll.stop();
+                m_restoreScroll.reset();
+                m_followLatest = false;
+            };
+        }
         addRendered(row);
         m_rows.append(row);
+        m_rowsDirty = true;
     }
 
     QWidget *buildActions(const Message &message)
@@ -1922,6 +2629,7 @@ struct ChatPane::Impl : public QObject {
                     return;
                 target->inserted = true;
                 q->insertText(target->insertSuggestion);
+                if (auto it = m_notes.find(noteId); it != m_notes.end()) saveHistory(noteId, *it);
                 renderChat();
             });
             layout->addWidget(button);
@@ -1942,21 +2650,6 @@ struct ChatPane::Impl : public QObject {
         return actions;
     }
 
-    static QToolButton *makeActionButton(const QString &text)
-    {
-        auto *button = new QToolButton;
-        button->setText(text);
-        button->setCursor(Qt::PointingHandCursor);
-        button->setAutoRaise(true);
-        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        button->setStyleSheet(QStringLiteral(
-            "QToolButton{background:transparent;border:0;padding:0;color:#70cdef;"
-            "font-size:12px;font-weight:700;}"
-            "QToolButton:enabled:hover{color:#a5e7fc;background:#263740;border-radius:4px;}"
-            "QToolButton:disabled{color:#a49f96;}"));
-        return button;
-    }
-
     void addRendered(QWidget *widget)
     {
         m_chatLayout->insertWidget(m_chatLayout->count() - 1, widget);
@@ -1975,21 +2668,80 @@ struct ChatPane::Impl : public QObject {
         m_rows.clear();
     }
 
+    void holdForResize(const QResizeEvent *event)
+    {
+        // Runs before the scroll area resizes its content. Only width changes of a
+        // visible, populated history are held; the first layout is never delayed.
+        if (event->size().width() == event->oldSize().width() || event->oldSize().width() <= 0
+            || !m_scroll->isVisible() || m_rows.isEmpty() || m_container->width() <= 0) {
+            return;
+        }
+        if (!m_resizeHeld) {
+            m_resizeHeld = true;
+            m_container->setFixedWidth(m_container->width());
+        }
+        m_resizeSettle.start();
+    }
+
+    void settleResize()
+    {
+        if (!m_resizeHeld) return;
+        m_resizeHeld = false;
+        m_container->setMinimumWidth(0);
+        m_container->setMaximumWidth(QWIDGETSIZE_MAX);
+        m_container->resize(m_scroll->viewport()->width(), m_container->height());
+        relayoutRows();
+        scheduleHistoryScroll();
+    }
+
     void relayoutRows()
     {
         if (!m_scroll)
             return;
-        const int width = m_scroll->viewport()->width();
+        const auto margins = m_chatLayout->contentsMargins();
+        const int width = m_scroll->viewport()->width() - margins.left() - margins.right();
+        // Only the width matters; resizing the window taller or shorter changes nothing here.
+        if (width == m_rowsWidth && !m_rowsDirty) return;
+        m_rowsWidth = width;
+        m_rowsDirty = false;
         for (MessageRow *row : m_rows)
-            row->setContentMaxWidth(width);
+            row->setContentWidth(width);
     }
 
-    void scrollToBottom()
+    void followLatest()
     {
-        QTimer::singleShot(0, this, [this] {
-            QScrollBar *bar = m_scroll->verticalScrollBar();
-            bar->setValue(bar->maximum());
-        });
+        m_followLatest = true;
+        m_restoreScroll.reset();
+        scheduleHistoryScroll();
+    }
+
+    void scheduleHistoryScroll()
+    {
+        // Composer wrapping and reply layout can update the range after the first render.
+        if (m_followLatest || m_restoreScroll) m_historyScroll.start(0);
+    }
+
+    void animateHistoryScroll(int target)
+    {
+        auto *bar = m_scroll->verticalScrollBar();
+        if (bar->isSliderDown() ||
+            (m_scrollMotion.state() == QAbstractAnimation::Running &&
+             m_scrollMotion.endValue().toInt() == target)) return;
+        m_scrollMotion.stop();
+        const int from = bar->value();
+        if (from == target) return;
+        if (q->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, q) <= 0) {
+            bar->setValue(target);
+            return;
+        }
+        {
+            const QSignalBlocker block(&m_scrollMotion);
+            m_scrollMotion.setCurrentTime(0);
+            m_scrollMotion.setDuration(qBound(100, 140 + qAbs(target - from) / 6, 280));
+            m_scrollMotion.setStartValue(from);
+            m_scrollMotion.setEndValue(target);
+        }
+        m_scrollMotion.start();
     }
 };
 

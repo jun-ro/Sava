@@ -2,6 +2,7 @@
 #include "discord-rpc.h"
 #include "editor-controls.h"
 #include "model-catalog.h"
+#include "story-context.h"
 #include "workspace.h"
 
 #include <QAbstractButton>
@@ -34,6 +35,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QScopedValueRollback>
 #include <QSettings>
@@ -126,6 +128,8 @@ QLabel#settingsTitle { font-size: 30px; font-weight: 900; }
 QFrame[settingsGroup="true"] { background: #202020; border: 1px solid #393734; border-radius: 12px; }
 QSpinBox#settingValue, QLineEdit#settingInput { background: #252525; color: #f3e9d5; border: 1px solid #41403d; border-radius: 7px; padding: 5px 8px; }
 QSpinBox#settingValue:focus, QLineEdit#settingInput:focus { border-color: #70cdef; }
+QPlainTextEdit#systemPromptAppend { background: #252525; color: #f3e9d5; border: 1px solid #41403d; border-radius: 7px; padding: 5px 8px; }
+QPlainTextEdit#systemPromptAppend:focus { border-color: #70cdef; }
 QLabel#settingsSection { font-weight: 700; color: #f3e9d5; }
 QLabel#settingsHint { color: #9c978f; font-size: 11px; }
 QCheckBox { background: transparent; spacing: 8px; }
@@ -383,6 +387,45 @@ QIcon settingsIcon()
     return QIcon(glyph);
 }
 
+// Hosts a pane that slides open or shut. While it animates, the child keeps its
+// final width and is only clipped, so its contents lay out once, not every frame.
+class SlideHost final : public QWidget
+{
+public:
+    explicit SlideHost(QWidget *parent) : QWidget(parent) {}
+
+    void setChild(QWidget *widget)
+    {
+        child = widget;
+        place();
+    }
+    int contentWidth() const { return fixedWidth; }
+    void setContentWidth(int width)
+    {
+        fixedWidth = width;
+        place();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        place();
+    }
+
+private:
+    void place()
+    {
+        if (!child) return;
+        // Anchored to the right edge so the pane appears to slide in from it.
+        const int width = fixedWidth > 0 ? fixedWidth : this->width();
+        child->setGeometry(this->width() - width, 0, width, height());
+    }
+
+    QWidget *child = nullptr;
+    int fixedWidth = 0;
+};
+
 class NoteStyle final : public QSyntaxHighlighter
 {
 public:
@@ -608,6 +651,8 @@ public:
             showAppSettings(false);
             setChatVisible(open);
         });
+        // Build the (hidden) chat pane while idle so the first open doesn't stall.
+        QTimer::singleShot(400, this, [this] { ensureChat(); });
         connect(settingsButton, &QToolButton::clicked, this, [this](bool open) {
             showAppSettings(open);
         });
@@ -722,8 +767,15 @@ private:
         settingsPage = new QWidget(pages);
         settingsPage->setObjectName("appSettings");
         auto *page = new QVBoxLayout(settingsPage);
-        page->setContentsMargins(24, 22, 24, 22);
-        auto *content = new QWidget(settingsPage);
+        page->setContentsMargins(0, 0, 0, 0);
+        auto *scroll = new QScrollArea(settingsPage);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidgetResizable(true);
+        auto *settingsBody = new QWidget(scroll);
+        auto *settingsLayout = new QVBoxLayout(settingsBody);
+        settingsLayout->setContentsMargins(24, 22, 24, 22);
+        auto *content = new QWidget(settingsBody);
         content->setFixedWidth(460);
         auto *layout = new QVBoxLayout(content);
         layout->setContentsMargins(0, 0, 0, 0);
@@ -770,12 +822,31 @@ private:
 
         auto *agent = new QFrame(content);
         agent->setProperty("settingsGroup", true);
-        auto *agentRow = new QHBoxLayout(agent);
-        agentRow->setContentsMargins(14, 12, 14, 12);
+        auto *agentLayout = new QVBoxLayout(agent);
+        agentLayout->setContentsMargins(14, 12, 14, 12);
+        auto *agentRow = new QHBoxLayout;
         agentRow->addWidget(new QLabel("Co-write providers", agent), 1);
         auto *configure = new QPushButton("Model && effort", agent);
         configure->setObjectName("openAgentSettings");
         agentRow->addWidget(configure);
+        agentLayout->addLayout(agentRow);
+        auto *promptLabel = new QLabel("Custom system prompt", agent);
+        agentLayout->addWidget(promptLabel);
+        auto *systemPrompt = new QPlainTextEdit(agent);
+        systemPrompt->setObjectName("systemPromptAppend");
+        systemPrompt->setAccessibleName("Custom system prompt");
+        systemPrompt->setToolTip("Appended to the system prompt for every Co-write and Council request.");
+        systemPrompt->setPlaceholderText("Challenge my assumptions. Avoid litotes.");
+        systemPrompt->setTabChangesFocus(true);
+        systemPrompt->setFixedHeight(76);
+        promptLabel->setBuddy(systemPrompt);
+        agentLayout->addWidget(systemPrompt);
+        auto *preferences = new QSettings(systemPrompt);
+        const QString promptKey = QStringLiteral("coWrite/systemPromptAppend");
+        systemPrompt->setPlainText(preferences->value(promptKey).toString());
+        connect(systemPrompt, &QPlainTextEdit::textChanged, preferences, [preferences,systemPrompt,promptKey] {
+            preferences->setValue(promptKey, systemPrompt->toPlainText());
+        });
         layout->addWidget(agent);
         connect(configure, &QPushButton::clicked, this, [this] { openProviderSettings(); });
 
@@ -843,8 +914,10 @@ private:
         });
         layout->addWidget(discord);
 
-        page->addWidget(content, 0, Qt::AlignTop | Qt::AlignHCenter);
-        page->addStretch();
+        settingsLayout->addWidget(content, 0, Qt::AlignTop | Qt::AlignHCenter);
+        settingsLayout->addStretch();
+        scroll->setWidget(settingsBody);
+        page->addWidget(scroll);
         pages->addWidget(settingsPage);
         auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), settingsPage);
         escape->setContext(Qt::WidgetWithChildrenShortcut);
@@ -966,7 +1039,7 @@ private:
         layout->addSpacing(4);
         addMeter(new QLabel("Context window", files), contextText, contextBar, "Context window");
         contextBar->setObjectName("context");
-        contextBar->setToolTip("Estimated tokens in the note and conversation.");
+        contextBar->setToolTip("Estimated tokens in the note or most recent Co-write request.");
     }
 
     void makeEditor()
@@ -1574,7 +1647,7 @@ private:
         }
         currentWordCount = count;
         words->setText(QString::number(count) + (count == 1 ? " word" : " words"));
-        if (!chat)
+        if (!chatHost || chatHost->isHidden())
             updateContext(text.isEmpty() ? -1 : (text.size() + 3) / 4, -1);
         updateDiscordPresence();
     }
@@ -1626,13 +1699,17 @@ private:
         });
     }
 
-    void setChatVisible(bool visible)
+    void ensureChat()
     {
-        if (visible && !chat) {
-            chat = new sava::ChatPane(panes);
+        if (!chat) {
+            chatHost = new SlideHost(panes);
+            chatHost->setMinimumWidth(0);
+            chatHost->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+            chatHost->setMaximumWidth(420);
+            chat = new sava::ChatPane(chatHost);
             chat->setMinimumWidth(0);
-            chat->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
-            chat->setMaximumWidth(420);
+            chatHost->setChild(chat);
+            chat->show();
             chat->insertText = [this](const QString &text) {
                 if (current.isEmpty()) return;
                 showPreview(false);
@@ -1645,19 +1722,75 @@ private:
                 source->setTextCursor(cursor);
             };
             chat->jumpToPassage = [this](const QString &text) { jumpTo(text); };
+            chat->editDocument = [this](const QString &note, const sava::DocumentEdit &edit) -> QString {
+                if (current.isEmpty() || note != current)
+                    return QStringLiteral("That note is no longer open.");
+                const QString contents = source->toPlainText();
+                qsizetype from = contents.size();
+                qsizetype to = from;
+                if (edit.kind != sava::DocumentEdit::Kind::Append) {
+                    from = contents.indexOf(edit.anchor);
+                    if (from < 0)
+                        return QStringLiteral("The passage to anchor to was not found in the note.");
+                    if (contents.indexOf(edit.anchor, from + 1) >= 0)
+                        return QStringLiteral("The passage to anchor to appears more than once in the note.");
+                    to = from + edit.anchor.size();
+                }
+                QString text = edit.text;
+                if (edit.kind == sava::DocumentEdit::Kind::Append) {
+                    text.prepend(contents.isEmpty() || contents.endsWith("\n\n") ? QString()
+                        : contents.endsWith('\n') ? QString("\n") : QString("\n\n"));
+                } else if (edit.kind == sava::DocumentEdit::Kind::InsertAfter) {
+                    text.prepend(to >= contents.size() || contents.at(to) == '\n' ? QString("\n\n") : QString(" "));
+                }
+                showPreview(false);
+                auto cursor = source->textCursor();
+                cursor.beginEditBlock();
+                cursor.setPosition(int(from));
+                cursor.setPosition(int(to), QTextCursor::KeepAnchor);
+                cursor.insertText(text);
+                cursor.endEditBlock();
+                source->setTextCursor(cursor);
+                source->ensureCursorVisible();
+                return {};
+            };
+            const auto storyRoot = [this](const QString &note) {
+                QString root;
+                if (note == current) {
+                    for (const auto &folder : roots) {
+                        if (folder.size() > root.size() && pathUnderRoot(note, folder))
+                            root = folder;
+                    }
+                }
+                return root;
+            };
+            chat->relatedStory = [this, storyRoot](const QString &note, const QString &question, bool lookup) {
+                const auto root = storyRoot(note);
+                return root.isEmpty() ? QString()
+                    : sava::storyContext(root, fileItems.keys(), note, source->toPlainText(), question, lookup);
+            };
+            chat->readStory = [this, storyRoot](const QString &note, const QString &selector, const QString &cursor) {
+                const auto root = storyRoot(note);
+                return root.isEmpty() ? sava::StoryPage{}
+                    : sava::readStoryPage(root, fileItems.keys(), note, source->toPlainText(), selector, cursor);
+            };
             chat->contextUpdated = [this](qint64 estimated, qint64 limit) {
                 updateContext(estimated, limit);
             };
             chat->providerUsageChanged = [this](sava::Harness provider) { refreshUsage(provider); };
-            chat->hide();
-        }
-        if (chat) {
-            if (visible) syncChat();
-            slidePane(chat, visible, qBound(188, qRound(width() * .23), 294), chatSlide);
+            chatHost->hide();
         }
     }
 
-    void slidePane(QWidget *pane, bool open, int width, QPointer<QVariantAnimation> &motion)
+    void setChatVisible(bool visible)
+    {
+        ensureChat();
+        if (visible) syncChat(false);
+        slidePane(chatHost, visible, qBound(188, qRound(width() * .23), 294), chatSlide, chatHost);
+    }
+
+    void slidePane(QWidget *pane, bool open, int width, QPointer<QVariantAnimation> &motion,
+                   SlideHost *host = nullptr)
     {
         if (motion) {
             motion->stop();
@@ -1665,6 +1798,8 @@ private:
         }
         const int index = panes->indexOf(pane);
         const int start = pane->isHidden() ? 0 : panes->sizes().at(index);
+        if (host && host->contentWidth() <= 0)
+            host->setContentWidth(qMax(1, open ? width : start));
         pane->show();
         auto resizePane = [this,index](int requested) {
             auto sizes = panes->sizes();
@@ -1682,14 +1817,17 @@ private:
         motion->setEasingCurve(QEasingCurve::InOutCubic);
         connect(motion, &QVariantAnimation::valueChanged, this,
                 [resizePane](const QVariant &value) { resizePane(value.toInt()); });
-        connect(motion, &QVariantAnimation::finished, pane, [pane,open] {
+        connect(motion, &QVariantAnimation::finished, pane, [pane,open,host] {
+            if (host) host->setContentWidth(0);
             if (!open) pane->hide();
         });
         motion->start(QAbstractAnimation::DeleteWhenStopped);
     }
 
-    void syncChat()
+    // A hidden chat is brought up to date when it opens, so switching notes stays quick.
+    void syncChat(bool onlyIfVisible = true)
     {
+        if (onlyIfVisible && (!chatHost || chatHost->isHidden())) return;
         if (chat) chat->setNote(current, QFileInfo(current).completeBaseName(), source->toPlainText());
     }
 
@@ -1748,6 +1886,7 @@ private:
     QPlainTextEdit *source = nullptr;
     QTextBrowser *preview = nullptr;
     sava::ChatPane *chat = nullptr;
+    SlideHost *chatHost = nullptr;
     QVariantAnimation *highlight = nullptr;
     QPointer<QVariantAnimation> fileSlide;
     QPointer<QVariantAnimation> chatSlide;
@@ -1777,6 +1916,9 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     app.setOrganizationName("Sava");
     app.setApplicationName("Sava");
+#ifdef Q_OS_LINUX
+    app.setDesktopFileName(QStringLiteral("io.github.jun_ro.Sava"));
+#endif
     app.setStyle("Fusion");
 #ifdef Q_OS_WIN
     app.setFont(QFont(QStringLiteral("Segoe UI"), 10));
