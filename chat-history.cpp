@@ -33,6 +33,7 @@ bool writePrivateFile(const QString &path, const QByteArray &data)
 
 bool isImageName(const QString &name)
 {
+    if (name.size() < 4) return false;
     const auto uuid = QUuid::fromString(name.chopped(4));
     return !uuid.isNull() && name == uuid.toString(QUuid::WithoutBraces) + QStringLiteral(".jpg");
 }

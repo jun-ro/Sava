@@ -1742,6 +1742,7 @@ private:
                         : contents.endsWith('\n') ? QString("\n") : QString("\n\n"));
                 } else if (edit.kind == sava::DocumentEdit::Kind::InsertAfter) {
                     text.prepend(to >= contents.size() || contents.at(to) == '\n' ? QString("\n\n") : QString(" "));
+                    from = to;
                 }
                 showPreview(false);
                 auto cursor = source->textCursor();

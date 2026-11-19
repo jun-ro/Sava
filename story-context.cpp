@@ -166,11 +166,11 @@ QString clip(const QString &text, int limit, bool ending = false)
     if (limit <= 3) return {};
     if (ending) {
         auto start = bytes.size() - limit + 3;
-        while ((static_cast<unsigned char>(bytes.at(start)) & 0xc0) == 0x80) ++start;
+        while (start < bytes.size() && (static_cast<unsigned char>(bytes.at(start)) & 0xc0) == 0x80) ++start;
         return "…" + QString::fromUtf8(bytes.constData() + start, bytes.size() - start);
     }
     int end = limit - 3;
-    while ((static_cast<unsigned char>(bytes.at(end)) & 0xc0) == 0x80) --end;
+    while (end > 0 && (static_cast<unsigned char>(bytes.at(end)) & 0xc0) == 0x80) --end;
     return QString::fromUtf8(bytes.constData(), end) + "…";
 }
 
