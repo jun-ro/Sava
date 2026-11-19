@@ -21,6 +21,7 @@ public:
     // The pane keeps a separate conversation per note id. Calling this again for
     // the same id refreshes the note text used to build prompts and affordances.
     void setNote(const QString &id, const QString &title, const QString &text);
+    void renameNote(const QString &oldId, const QString &newId, const QString &title);
     void openSettings();
 
     // Set by the parent so assistant messages can insert a suggested line into

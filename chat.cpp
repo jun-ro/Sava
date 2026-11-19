@@ -293,9 +293,9 @@ protected:
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         const QRectF bounds = QRectF(rect());
-        if (underMouse() || isDown()) {
+        if (isEnabled() && (underMouse() || isDown())) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(255, 255, 255, isDown() ? 20 : 10));
+            painter.setBrush(QColor(255, 255, 255, isDown() ? 42 : 27));
             painter.drawRoundedRect(bounds.adjusted(0.5, 0.5, -0.5, -0.5), 7, 7);
         }
         const QPixmap icon =
@@ -303,7 +303,7 @@ protected:
         const int x = (rect().width() - 15) / 2;
         const int y = (rect().height() - 15) / 2 - 1;
         if (!icon.isNull()) {
-            painter.setOpacity(isChecked() ? 1.0 : 0.66);
+            painter.setOpacity(isChecked() || underMouse() ? 1.0 : 0.66);
             painter.drawPixmap(x, y, icon);
             painter.setOpacity(1.0);
         }
@@ -339,7 +339,7 @@ protected:
         const QRectF bounds = QRectF(rect());
         if (underMouse() || isDown() || isChecked()) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(255, 255, 255, isChecked() ? 14 : 8));
+            painter.setBrush(QColor(255, 255, 255, underMouse() ? 29 : 14));
             painter.drawRoundedRect(bounds.adjusted(1, 1, -1, -1), 7, 7);
         }
         const QColor color = (isChecked() || underMouse()) ? kBlue : kSoft;
@@ -480,6 +480,7 @@ public:
             "QComboBox{background:#252525;border:1px solid #353535;border-radius:6px;"
             "padding:3px 16px 3px 7px;color:#f3e9d5;font-size:12px;}"
             "QComboBox:focus{border-color:#70cdef;}"
+            "QComboBox:enabled:hover{border-color:#68635f;}"
             "QComboBox:disabled{color:#77736c;border-color:#2f2f2f;}"
             "QComboBox::drop-down{width:16px;border:0;}"
             "QComboBox::down-arrow{image:none;}"
@@ -725,6 +726,26 @@ struct ChatPane::Impl : public QObject {
         reportContext();
     }
 
+    void renameNote(const QString &oldId, const QString &newId, const QString &title)
+    {
+        const bool active = m_noteId == oldId;
+        if (active) cancelRun(false);
+        const auto position = m_noteOrder.indexOf(oldId);
+        m_noteOrder.removeAll(newId);
+        m_noteOrder.removeAll(oldId);
+        m_notes.remove(newId);
+        if (m_notes.contains(oldId)) {
+            m_notes.insert(newId, m_notes.take(oldId));
+            m_noteOrder.insert(qBound(qsizetype(0), position, m_noteOrder.size()), newId);
+        }
+        if (active) {
+            m_noteId = newId;
+            m_noteTitle = title;
+            renderChat();
+            reportContext();
+        }
+    }
+
     bool eventFilter(QObject *watched, QEvent *event) override
     {
         if (watched == m_scroll->viewport() && event->type() == QEvent::Resize) {
@@ -854,7 +875,7 @@ struct ChatPane::Impl : public QObject {
         const QString toggleBase = QStringLiteral(
             "QToolButton{background:transparent;border:0;border-radius:12px;padding:4px 9px;"
             "color:#c0bbb3;font-size:12px;font-weight:650;}"
-            "QToolButton:hover{background:rgba(255,255,255,8);}");
+            "QToolButton:enabled:hover{background:#383532;}");
 
         m_soloButton = new QToolButton(modeBar);
         m_soloButton->setObjectName(QStringLiteral("chatModeSolo"));
@@ -862,7 +883,8 @@ struct ChatPane::Impl : public QObject {
         m_soloButton->setCheckable(true);
         m_soloButton->setCursor(Qt::PointingHandCursor);
         m_soloButton->setStyleSheet(
-            toggleBase + QStringLiteral("QToolButton:checked{background:#2b3932;color:#76e3b4;}"));
+            toggleBase + QStringLiteral("QToolButton:checked{background:#2b3932;color:#76e3b4;}"
+                                        "QToolButton:checked:enabled:hover{background:#394d42;}"));
 
         m_councilButton = new QToolButton(modeBar);
         m_councilButton->setObjectName(QStringLiteral("chatModeCouncil"));
@@ -870,7 +892,8 @@ struct ChatPane::Impl : public QObject {
         m_councilButton->setCheckable(true);
         m_councilButton->setCursor(Qt::PointingHandCursor);
         m_councilButton->setStyleSheet(
-            toggleBase + QStringLiteral("QToolButton:checked{background:#3b2c36;color:#ff80a7;}"));
+            toggleBase + QStringLiteral("QToolButton:checked{background:#3b2c36;color:#ff80a7;}"
+                                        "QToolButton:checked:enabled:hover{background:#503a48;}"));
 
         auto *modeGroup = new QButtonGroup(this);
         modeGroup->setExclusive(true);
@@ -1021,7 +1044,9 @@ struct ChatPane::Impl : public QObject {
         m_web->setCheckable(true);
         m_web->setStyleSheet(QStringLiteral(
             "QToolButton{color:#c0bbb3;background:transparent;border:0;padding:4px 5px;font-size:11px;}"
-            "QToolButton:hover{background:#353535;}QToolButton:checked{color:#a5e7fc;background:#263740;}"
+            "QToolButton:enabled:hover{background:#383532;}"
+            "QToolButton:checked{color:#a5e7fc;background:#263740;}"
+            "QToolButton:checked:enabled:hover{background:#344952;}"
             "QToolButton:disabled{color:#77736c;}"));
         inputLayout->insertWidget(1, m_web);
         m_input->imagePasted = [this](const QImage &image) { attachImage(image); };
@@ -1927,7 +1952,7 @@ struct ChatPane::Impl : public QObject {
         button->setStyleSheet(QStringLiteral(
             "QToolButton{background:transparent;border:0;padding:0;color:#70cdef;"
             "font-size:12px;font-weight:700;}"
-            "QToolButton:hover{color:#a5e7fc;}"
+            "QToolButton:enabled:hover{color:#a5e7fc;background:#263740;border-radius:4px;}"
             "QToolButton:disabled{color:#a49f96;}"));
         return button;
     }
@@ -1998,6 +2023,11 @@ void ChatPane::setNote(const QString &id, const QString &title, const QString &t
 {
     if (m_impl)
         m_impl->setNote(id, title, text);
+}
+
+void ChatPane::renameNote(const QString &oldId, const QString &newId, const QString &title)
+{
+    m_impl->renameNote(oldId, newId, title);
 }
 
 void ChatPane::openSettings()

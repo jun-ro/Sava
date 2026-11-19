@@ -90,7 +90,10 @@ void fadeIn(QWidget *page)
 ModeSelector::ModeSelector(QWidget *parent) : QWidget(parent), edit(new QToolButton(this)), preview(new QToolButton(this))
 {
     setFixedSize(58, 30);
-    setStyleSheet("sava--ModeSelector { background: transparent; } QToolButton { background: transparent; padding: 0; }");
+    setStyleSheet("sava--ModeSelector { background: transparent; }"
+                  "QToolButton { background: transparent; padding: 0; border-radius: 10px; }"
+                  "QToolButton:enabled:hover { background: rgba(255,255,255,30); }"
+                  "QToolButton:checked:enabled:hover { background: rgba(165,231,252,43); }");
     edit->setGeometry(2, 3, 26, 24);
     preview->setGeometry(30, 3, 26, 24);
     edit->setIcon(modeIcon(false));

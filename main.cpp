@@ -19,6 +19,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -118,6 +119,7 @@ QLabel#path, QLabel#stats { color: #b9b3a9; }
 QTabBar#noteTabs::tab { background: transparent; color: #b9b3a9; border-radius: 12px; margin-right: 4px; padding: 4px 8px; max-width: 174px; min-height: 18px; }
 QTabBar#noteTabs::tab:hover { background: #242424; }
 QTabBar#noteTabs::tab:selected { background: #292725; color: #f3e9d5; font-weight: 700; }
+QTabBar#noteTabs::tab:selected:hover { background: #393632; }
 QWidget#tabCloseSlot { background: transparent; }
 QToolButton[tabClose="true"] { padding: 0; border-radius: 5px; }
 QLabel#settingsTitle { font-size: 30px; font-weight: 900; }
@@ -133,8 +135,9 @@ QCheckBox::indicator:checked { background: #76e3b4; border-color: #76e3b4; }
 QPushButton#openAgentSettings { background: #263740; color: #a5e7fc; padding: 6px 12px; font-weight: 650; }
 QPushButton#openAgentSettings:hover { background: #304750; }
 QToolButton, QPushButton { background: transparent; border: 0; border-radius: 12px; padding: 3px 8px; }
-QToolButton:hover, QPushButton:hover { background: #32302c; }
+QToolButton:enabled:hover, QPushButton:enabled:hover { background: #383532; }
 QToolButton:checked { background: #263740; color: #70cdef; }
+QToolButton:checked:enabled:hover { background: #344952; }
 QToolButton:focus, QPushButton:focus, QLineEdit:focus { border: 1px solid #70cdef; }
 QLineEdit { border: 1px solid #353535; border-radius: 13px; padding: 4px 9px; }
 QTreeWidget { border: 0; padding: 1px; outline: 0; }
@@ -491,7 +494,9 @@ protected:
         QPainterPath clip;
         clip.addRoundedRect(rect().adjusted(1, 1, -1, -1), 14, 14);
         painter.setClipPath(clip);
-        painter.fillPath(clip, isChecked() ? QColor("#20201e") : QColor("#131313"));
+        const bool hovered = isEnabled() && underMouse();
+        painter.fillPath(clip, hovered ? QColor("#34312e")
+                                       : isChecked() ? QColor("#20201e") : QColor("#131313"));
         constexpr qreal pi = 3.141592653589793;
         const qreal lift = std::sin(pi * hoverProgress);
         const qreal swing = lift * std::sin(2 * pi * hoverProgress);
@@ -533,7 +538,7 @@ protected:
         }
 
         const bool keyboardFocus = hasFocus() && window()->testAttribute(Qt::WA_KeyboardFocusChange);
-        if (isChecked() || keyboardFocus) {
+        if (isChecked() || keyboardFocus || hovered) {
             painter.setClipping(false);
             painter.setPen(QPen(keyboardFocus ? QColor(171, 211, 222, 168)
                                               : QColor(243, 233, 213, 72)));
@@ -1114,7 +1119,14 @@ private:
         closeLayout->addWidget(close);
         closeSlot->setFixedSize(closeLayout->sizeHint());
         tabs->setTabButton(index, QTabBar::RightSide, closeSlot);
-        connect(close, &QToolButton::clicked, this, [this,file] { closeTab(tabIndex(file)); });
+        connect(close, &QToolButton::clicked, this, [this,closeSlot] {
+            for (int tab = 0; tab < tabs->count(); ++tab) {
+                if (tabs->tabButton(tab, QTabBar::RightSide) == closeSlot) {
+                    closeTab(tab);
+                    return;
+                }
+            }
+        });
         return index;
     }
 
@@ -1224,9 +1236,12 @@ private:
         QAction *openAction = nullptr;
         QAction *trashAction = nullptr;
         QAction *copyAction = nullptr;
+        QAction *renameAction = nullptr;
         QAction *toggleAction = nullptr;
         if (!notes.isEmpty()) {
             openAction = menu.addAction(notes.size() == 1 ? "Open note" : "Open selected notes");
+            if (notes.size() == 1 && item && !item->data(0, Qt::UserRole).toString().isEmpty())
+                renameAction = menu.addAction("Rename…");
             copyAction = menu.addAction(notes.size() == 1 ? "Copy path" : "Copy paths");
         }
         if (!folder.isEmpty()) {
@@ -1246,6 +1261,8 @@ private:
         if (!action) return;
         if (action == openAction)
             openNotes(notes);
+        else if (action == renameAction)
+            renameNote(notes.constFirst());
         else if (action == copyAction) {
             if (notes.isEmpty()) {
                 QApplication::clipboard()->setText(QDir::toNativeSeparators(folder));
@@ -1264,6 +1281,72 @@ private:
             create(!folder.isEmpty() || file.isEmpty() ? folder : QFileInfo(file).absolutePath());
         } else if (action == trashAction)
             trashNotes(notes);
+    }
+
+    void renameNote(const QString &file)
+    {
+        const QFileInfo info(file);
+        const QString extension = "." + info.suffix();
+        QInputDialog dialog(this);
+        dialog.setWindowTitle("Rename note");
+        dialog.setLabelText("Name without the " + extension + " extension");
+        dialog.setTextValue(info.completeBaseName());
+        dialog.setOkButtonText("Rename");
+        while (dialog.exec() == QDialog::Accepted) {
+            const QString name = dialog.textValue().trimmed();
+            if (name == info.completeBaseName()) return;
+            bool valid = !name.isEmpty() && !name.startsWith('.') &&
+                         !name.contains('/') && !name.contains('\\') &&
+                         !name.contains(QChar::Null);
+#ifdef Q_OS_WIN
+            static const QRegularExpression reserved(
+                R"(^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)|[<>:"|?*\x00-\x1f])",
+                QRegularExpression::CaseInsensitiveOption);
+            valid = valid && !name.endsWith('.') && !reserved.match(name).hasMatch();
+#endif
+            if (!valid) {
+                dialog.setLabelText("Enter a valid note name without its extension.");
+                continue;
+            }
+            const QString destination = info.dir().filePath(name + extension);
+            const QFileInfo sourceInfo(file);
+            if (!sourceInfo.isFile() || sourceInfo.isSymLink() ||
+                !samePath(sourceInfo.canonicalFilePath(), file)) {
+                QMessageBox::warning(this, "Rename note", "The original note is unavailable.");
+                return;
+            }
+            if (file == current && !saveCurrent()) return;
+            QFile note(file);
+            if (!note.rename(destination)) {
+                dialog.setLabelText("Could not rename the note: " + note.errorString());
+                continue;
+            }
+
+            const int index = tabIndex(file);
+            if (index >= 0) {
+                tabs->setTabText(index, name);
+                tabs->setTabData(index, destination);
+                tabs->setTabToolTip(index, QDir::toNativeSeparators(destination));
+                if (auto *slot = tabs->tabButton(index, QTabBar::RightSide)) {
+                    if (auto *close = slot->findChild<QToolButton *>()) {
+                        close->setToolTip("Close " + name);
+                        close->setAccessibleName("Close " + name);
+                    }
+                }
+            }
+            if (tabPositions.contains(file))
+                tabPositions.insert(destination, tabPositions.take(file));
+            if (file == current) {
+                current = destination;
+                updateNotePath(QFileInfo(destination));
+            }
+            if (chat) chat->renameNote(file, destination, name);
+            reloadTree();
+            if (auto *item = fileItems.value(destination); item && tree->visualItemRect(item).isValid())
+                tree->setCurrentItem(item);
+            statusBar()->showMessage("Renamed to " + name + extension, 3500);
+            return;
+        }
     }
 
     void trashNotes(const QStringList &notes)
@@ -1431,10 +1514,7 @@ private:
         const QFileInfo info(file);
         addTab(file);
         selectTab();
-        const QString dirLabel = info.dir().dirName().isEmpty()
-            ? QDir::toNativeSeparators(info.absolutePath())
-            : info.dir().dirName();
-        path->setText(dirLabel + " / " + info.fileName());
+        updateNotePath(info);
         if (selectFile) {
             if (auto *item = fileItems.value(file); item && !item->isHidden()) {
                 for (auto *parent = item->parent(); parent; parent = parent->parent())
@@ -1445,6 +1525,14 @@ private:
         if (mode->previewing()) showPreview(true);
         updateWords();
         syncChat();
+    }
+
+    void updateNotePath(const QFileInfo &info)
+    {
+        const QString dirLabel = info.dir().dirName().isEmpty()
+            ? QDir::toNativeSeparators(info.absolutePath())
+            : info.dir().dirName();
+        path->setText(dirLabel + " / " + info.fileName());
     }
 
     void create(const QString &folder = {})
