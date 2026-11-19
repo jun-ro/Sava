@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 490" width="920" height="490" role="img" aria-label="Sava footprint and RAM benchmarks compared against Electron note apps">
+  <defs>
+    <linearGradient id="brandRibbon" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffda70"/>
+      <stop offset="34%" stop-color="#ff80a7"/>
+      <stop offset="68%" stop-color="#76e3b4"/>
+      <stop offset="100%" stop-color="#70cdef"/>
+    </linearGradient>
+    <linearGradient id="savaRamGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#76e3b4"/>
+      <stop offset="100%" stop-color="#70cdef"/>
+    </linearGradient>
+    <linearGradient id="savaBinGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffda70"/>
+      <stop offset="100%" stop-color="#ff80a7"/>
+    </linearGradient>
+    <linearGradient id="savaBundleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#76e3b4"/>
+      <stop offset="100%" stop-color="#5ec499"/>
+    </linearGradient>
+    <linearGradient id="mutedBar" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#353330"/>
+      <stop offset="100%" stop-color="#45423d"/>
+    </linearGradient>
+    <filter id="softGlow" x="-20%" y="-40%" width="140%" height="180%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer container -->
+  <rect x="0.5" y="0.5" width="919" height="489" rx="18" fill="#171717" stroke="#393734"/>
+
+  <!-- Subtle top brand stripe -->
+  <rect x="24" y="18" width="872" height="3.5" rx="1.75" fill="url(#brandRibbon)" opacity="0.9"/>
+
+  <!-- Header -->
+  <text x="28" y="54" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.3">Native speed. Zero Chromium tax.</text>
+  <text x="892" y="53" text-anchor="end" fill="#a49f96" font-family="'Cascadia Code', ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5">C++17 · Qt 6 Widgets · Windows 11 x64</text>
+
+  <!-- KPI Row (4 cards) -->
+  <!-- KPI 1: Binary -->
+  <g transform="translate(28, 72)">
+    <rect width="206" height="76" rx="12" fill="#202020" stroke="#353330"/>
+    <circle cx="18" cy="22" r="4" fill="#ffda70"/>
+    <text x="29" y="26" fill="#b9b3a9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="11.5" font-weight="600">STRIPPED BINARY</text>
+    <text x="16" y="56" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, sans-serif" font-size="24" font-weight="800">1.75 MB</text>
+    <text x="122" y="55" fill="#9c978f" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">0.89 MB code</text>
+  </g>
+
+  <!-- KPI 2: RAM -->
+  <g transform="translate(248, 72)">
+    <rect width="206" height="76" rx="12" fill="#202020" stroke="#353330"/>
+    <circle cx="18" cy="22" r="4" fill="#76e3b4"/>
+    <text x="29" y="26" fill="#b9b3a9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="11.5" font-weight="600">PRIVATE RAM</text>
+    <text x="16" y="56" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, sans-serif" font-size="24" font-weight="800">50 MB</text>
+    <text x="103" y="55" fill="#76e3b4" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">52.2 MB WS</text>
+  </g>
+
+  <!-- KPI 3: Cold start -->
+  <g transform="translate(468, 72)">
+    <rect width="206" height="76" rx="12" fill="#202020" stroke="#353330"/>
+    <circle cx="18" cy="22" r="4" fill="#70cdef"/>
+    <text x="29" y="26" fill="#b9b3a9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="11.5" font-weight="600">COLD LAUNCH</text>
+    <text x="16" y="56" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, sans-serif" font-size="24" font-weight="800">210 ms</text>
+    <text x="112" y="55" fill="#70cdef" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">to window</text>
+  </g>
+
+  <!-- KPI 4: Electron overhead -->
+  <g transform="translate(688, 72)">
+    <rect width="204" height="76" rx="12" fill="#202020" stroke="#353330"/>
+    <circle cx="18" cy="22" r="4" fill="#ff80a7"/>
+    <text x="29" y="26" fill="#b9b3a9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="11.5" font-weight="600">BROWSER ENGINES</text>
+    <text x="16" y="56" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, sans-serif" font-size="25" font-weight="800">0</text>
+    <text x="42" y="55" fill="#ff80a7" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10.5">no V8 / Electron</text>
+  </g>
+
+  <!-- Left Chart Card: Memory Footprint -->
+  <g transform="translate(28, 166)">
+    <rect width="424" height="278" rx="14" fill="#1d1d1d" stroke="#353330"/>
+    <text x="20" y="30" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, sans-serif" font-size="14.5" font-weight="700">Memory Usage (Idle Workspace)</text>
+    <text x="404" y="30" text-anchor="end" fill="#9c978f" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11">MB · lower is better</text>
+
+    <!-- Grid lines (max = 500 MB across 300px, x=96..396) -->
+    <line x1="96" y1="48" x2="96" y2="232" stroke="#2c2b29" stroke-width="1"/>
+    <line x1="156" y1="48" x2="156" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="216" y1="48" x2="216" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="276" y1="48" x2="276" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="336" y1="48" x2="336" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="396" y1="48" x2="396" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+
+    <!-- Axis ticks -->
+    <text x="96" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">0</text>
+    <text x="156" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">100</text>
+    <text x="216" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">200</text>
+    <text x="276" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">300</text>
+    <text x="336" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">400</text>
+    <text x="396" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">500</text>
+
+    <!-- Row 1: Sava (50 MB -> 30px) -->
+    <text x="20" y="75" fill="#76e3b4" font-family="'Segoe UI', -apple-system, sans-serif" font-size="13" font-weight="700">Sava</text>
+    <text x="20" y="90" fill="#8f8a82" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Qt 6 native</text>
+    <rect x="96" y="61" width="300" height="24" rx="7" fill="#242321"/>
+    <rect x="96" y="61" width="30" height="24" rx="7" fill="url(#savaRamGrad)" filter="url(#softGlow)"/>
+    <text x="135" y="77" fill="#76e3b4" font-family="'Cascadia Code', ui-monospace, monospace" font-size="12" font-weight="700">50 MB</text>
+    <rect x="184" y="64" width="76" height="18" rx="9" fill="#20322b"/>
+    <text x="222" y="76.5" text-anchor="middle" fill="#76e3b4" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10" font-weight="700">5×–9× leaner</text>
+
+    <!-- Row 2: Obsidian (~260 MB -> 156px) -->
+    <text x="20" y="121" fill="#d9d3c9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="12.5" font-weight="600">Obsidian</text>
+    <text x="20" y="135" fill="#807b74" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Electron</text>
+    <rect x="96" y="107" width="300" height="24" rx="7" fill="#242321"/>
+    <rect x="96" y="107" width="156" height="24" rx="7" fill="url(#mutedBar)"/>
+    <text x="260" y="123" fill="#c0bbb3" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11.5">~260 MB</text>
+
+    <!-- Row 3: VS Code (~380 MB -> 228px) -->
+    <text x="20" y="167" fill="#d9d3c9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="12.5" font-weight="600">VS Code</text>
+    <text x="20" y="181" fill="#807b74" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Electron</text>
+    <rect x="96" y="153" width="300" height="24" rx="7" fill="#242321"/>
+    <rect x="96" y="153" width="228" height="24" rx="7" fill="url(#mutedBar)"/>
+    <text x="332" y="169" fill="#c0bbb3" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11.5">~380 MB</text>
+
+    <!-- Row 4: Notion (~460 MB -> 276px) -->
+    <text x="20" y="213" fill="#d9d3c9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="12.5" font-weight="600">Notion</text>
+    <text x="20" y="227" fill="#807b74" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Electron</text>
+    <rect x="96" y="199" width="300" height="24" rx="7" fill="#242321"/>
+    <rect x="96" y="199" width="276" height="24" rx="7" fill="url(#mutedBar)"/>
+    <text x="364" y="215" text-anchor="end" fill="#f3e9d5" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11.5">~460 MB</text>
+  </g>
+
+  <!-- Right Chart Card: Disk Footprint -->
+  <g transform="translate(468, 166)">
+    <rect width="424" height="278" rx="14" fill="#1d1d1d" stroke="#353330"/>
+    <text x="20" y="30" fill="#f3e9d5" font-family="'Segoe UI', -apple-system, sans-serif" font-size="14.5" font-weight="700">Disk Footprint (Binary vs Bundle)</text>
+    <text x="404" y="30" text-anchor="end" fill="#9c978f" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11">MB · lower is better</text>
+
+    <!-- Grid lines (max = 450 MB across 288px, x=108..396) -->
+    <line x1="108" y1="48" x2="108" y2="232" stroke="#2c2b29" stroke-width="1"/>
+    <line x1="172" y1="48" x2="172" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="236" y1="48" x2="236" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="300" y1="48" x2="300" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+    <line x1="364" y1="48" x2="364" y2="232" stroke="#262523" stroke-width="1" stroke-dasharray="3,4"/>
+
+    <!-- Axis ticks -->
+    <text x="108" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">0</text>
+    <text x="172" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">100</text>
+    <text x="236" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">200</text>
+    <text x="300" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">300</text>
+    <text x="364" y="250" text-anchor="middle" fill="#88837c" font-family="'Cascadia Code', ui-monospace, monospace" font-size="10">400</text>
+
+    <!-- Row 1: Sava binary (1.75 MB -> min visible 8px) -->
+    <text x="20" y="75" fill="#ffda70" font-family="'Segoe UI', -apple-system, sans-serif" font-size="13" font-weight="700">Sava exe</text>
+    <text x="20" y="90" fill="#8f8a82" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Linux / binary</text>
+    <rect x="108" y="61" width="288" height="24" rx="7" fill="#242321"/>
+    <rect x="108" y="61" width="8" height="24" rx="4" fill="url(#savaBinGrad)" filter="url(#softGlow)"/>
+    <text x="125" y="77" fill="#ffda70" font-family="'Cascadia Code', ui-monospace, monospace" font-size="12" font-weight="700">1.75 MB</text>
+    <rect x="188" y="64" width="110" height="18" rx="9" fill="#322c1d"/>
+    <text x="243" y="76.5" text-anchor="middle" fill="#ffda70" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10" font-weight="700">0.89 MB pure code</text>
+
+    <!-- Row 2: Sava Windows bundle (83.7 MB -> 53.6px) -->
+    <text x="20" y="121" fill="#76e3b4" font-family="'Segoe UI', -apple-system, sans-serif" font-size="12.5" font-weight="700">Sava Win</text>
+    <text x="20" y="135" fill="#8f8a82" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">exe + Qt6 DLLs</text>
+    <rect x="108" y="107" width="288" height="24" rx="7" fill="#242321"/>
+    <rect x="108" y="107" width="54" height="24" rx="7" fill="url(#savaBundleGrad)"/>
+    <text x="171" y="123" fill="#76e3b4" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11.5" font-weight="700">83.7 MB</text>
+    <text x="233" y="123" fill="#807b74" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10.5">(47 MB w/o ICU)</text>
+
+    <!-- Row 3: Obsidian (~310 MB -> 198.4px) -->
+    <text x="20" y="167" fill="#d9d3c9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="12.5" font-weight="600">Obsidian</text>
+    <text x="20" y="181" fill="#807b74" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Win install</text>
+    <rect x="108" y="153" width="288" height="24" rx="7" fill="#242321"/>
+    <rect x="108" y="153" width="198" height="24" rx="7" fill="url(#mutedBar)"/>
+    <text x="315" y="169" fill="#c0bbb3" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11.5">~310 MB</text>
+
+    <!-- Row 4: Notion (~420 MB -> 268.8px) -->
+    <text x="20" y="213" fill="#d9d3c9" font-family="'Segoe UI', -apple-system, sans-serif" font-size="12.5" font-weight="600">Notion</text>
+    <text x="20" y="227" fill="#807b74" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10">Win install</text>
+    <rect x="108" y="199" width="288" height="24" rx="7" fill="#242321"/>
+    <rect x="108" y="199" width="269" height="24" rx="7" fill="url(#mutedBar)"/>
+    <text x="369" y="215" text-anchor="end" fill="#f3e9d5" font-family="'Cascadia Code', ui-monospace, monospace" font-size="11.5">~420 MB</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="28" y="468" fill="#7d7871" font-family="'Segoe UI', -apple-system, sans-serif" font-size="10.5">
+    Sava measured on Windows 11 x64 (stripped build, 2 Markdown tabs open, Co-write ready). Electron figures reflect typical multi-process Windows installs.
+  </text>
+</svg>
